@@ -3,7 +3,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import { collection, query, where, getDocs } from 'firebase/firestore';
 import { db } from '../firebase';
 import Scanner from '../components/Scanner';
-import { Search, Barcode, AlertCircle, ArrowLeft, ChevronRight, ScanLine } from 'lucide-react';
+import { Search, Barcode, AlertCircle, ArrowLeft, ChevronRight, ScanLine, Zap } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
 
@@ -13,6 +13,7 @@ const ScanPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [searching, setSearching] = useState(false);
   const [showScanner, setShowScanner] = useState(true);
+  const [useFlash, setUseFlash] = useState(false);
   const [recentScans, setRecentScans] = useState<{ barcode: string; product?: any; timestamp: number }[]>([]);
   
   // New Barcode Handling
@@ -25,7 +26,7 @@ const ScanPage: React.FC = () => {
     setSearching(true);
     setError(null);
     try {
-      const q = query(collection(db, 'products'), where('barcode', '==', barcode));
+      const q = query(collection(db, 'products'), where('barcodes', 'array-contains', barcode));
       const querySnapshot = await getDocs(q);
       
       let productData = null;
@@ -84,17 +85,36 @@ const ScanPage: React.FC = () => {
         <div className="pt-4">
           <AnimatePresence mode="wait">
             {showScanner ? (
-              <Scanner onScan={(barcode) => {
-                handleScan(barcode);
-              }} onClose={() => setShowScanner(false)} />
+              <Scanner 
+                onScan={(barcode) => {
+                  handleScan(barcode);
+                }} 
+                onClose={() => setShowScanner(false)} 
+                autoFlash={useFlash}
+              />
             ) : (
-              <button
-                onClick={() => setShowScanner(true)}
-                className="w-full py-4 bg-blue-600 text-white font-bold rounded-2xl shadow-lg shadow-blue-500/20 hover:bg-blue-700 transition-all flex items-center justify-center space-x-2"
-              >
-                <ScanLine className="h-5 w-5" />
-                <span>Scan Again</span>
-              </button>
+              <div className="space-y-3">
+                <button
+                  onClick={() => {
+                    setUseFlash(false);
+                    setShowScanner(true);
+                  }}
+                  className="w-full py-4 bg-blue-600 text-white font-bold rounded-2xl shadow-lg shadow-blue-500/20 hover:bg-blue-700 transition-all flex items-center justify-center space-x-2"
+                >
+                  <ScanLine className="h-5 w-5" />
+                  <span>Scan Again</span>
+                </button>
+                <button
+                  onClick={() => {
+                    setUseFlash(true);
+                    setShowScanner(true);
+                  }}
+                  className="w-full py-4 bg-amber-500 text-white font-bold rounded-2xl shadow-lg shadow-amber-500/20 hover:bg-amber-600 transition-all flex items-center justify-center space-x-2"
+                >
+                  <Zap className="h-5 w-5" />
+                  <span>Scan with Flashlight</span>
+                </button>
+              </div>
             )}
           </AnimatePresence>
         </div>
@@ -228,7 +248,7 @@ const ScanPage: React.FC = () => {
                     onClick={() => navigate(`/products?linkBarcode=${newBarcode}`)}
                     className="w-full py-4 bg-white border-2 border-gray-200 text-gray-700 font-bold rounded-2xl hover:bg-gray-50 transition-all"
                   >
-                    Add to Existing Product
+                    Link to Existing Product
                   </button>
                   <button
                     onClick={() => setShowNewBarcodeModal(false)}

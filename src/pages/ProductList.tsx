@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { collection, onSnapshot, query, orderBy, doc, updateDoc } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { Product } from '../types';
-import { Search, Plus, Package, AlertTriangle, Calendar, ChevronRight, Link as LinkIcon, X } from 'lucide-react';
+import { Search, Plus, Package, AlertTriangle, Calendar, ChevronRight, Link as LinkIcon, X, CheckCircle, Lock } from 'lucide-react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../components/AuthGuard';
 import { motion, AnimatePresence } from 'motion/react';
@@ -17,6 +17,10 @@ const ProductList: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(true);
   const [linkingBarcode, setLinkingBarcode] = useState<string | null>(null);
+  const [confirmLinkProduct, setConfirmLinkProduct] = useState<Product | null>(null);
+  const [linking, setLinking] = useState(false);
+  const [linkError, setLinkError] = useState<string | null>(null);
+  const [linkSuccess, setLinkSuccess] = useState(false);
 
   // Parse query params
   useEffect(() => {
@@ -43,7 +47,8 @@ const ProductList: React.FC = () => {
 
   const filteredProducts = products.filter(p => 
     p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    p.barcode.includes(searchTerm)
+    p.barcode.includes(searchTerm) ||
+    (p.barcodes && p.barcodes.some(bc => bc.includes(searchTerm)))
   );
 
   const getAlertStatus = (product: Product) => {
@@ -56,19 +61,47 @@ const ProductList: React.FC = () => {
     return { isLowStock, isExpiring };
   };
 
-  const handleProductClick = async (product: Product) => {
-    if (linkingBarcode) {
-      if (window.confirm(`Are you sure you want to link barcode "${linkingBarcode}" to "${product.name}"? This will replace its current barcode.`)) {
-        try {
-          await updateDoc(doc(db, 'products', product.id), {
-            barcode: linkingBarcode
-          });
-          navigate(`/products/${product.id}`);
-        } catch (error) {
-          console.error("Error linking barcode:", error);
-          alert("Failed to link barcode.");
-        }
+  const handleConfirmLink = async () => {
+    if (!confirmLinkProduct || !linkingBarcode) return;
+    
+    setLinking(true);
+    setLinkError(null);
+    try {
+      const currentBarcodes = confirmLinkProduct.barcodes || [confirmLinkProduct.barcode];
+      const newBarcodes = Array.from(new Set([...currentBarcodes, linkingBarcode]));
+      
+      await updateDoc(doc(db, 'products', confirmLinkProduct.id), {
+        barcodes: newBarcodes,
+        barcode: newBarcodes[0] // Ensure primary barcode is consistent
+      });
+      setLinkSuccess(true);
+      setTimeout(() => {
+        setLinkSuccess(false);
+        setConfirmLinkProduct(null);
+        setLinkingBarcode(null);
+        navigate(`/products/${confirmLinkProduct.id}`, { replace: true });
+      }, 1500);
+    } catch (error: any) {
+      console.error("Error linking barcode:", error);
+      if (error.message?.includes('permission')) {
+        setLinkError("Permission denied. Only admins can link barcodes.");
+      } else {
+        setLinkError("Failed to link barcode. Please try again.");
       }
+    } finally {
+      setLinking(false);
+    }
+  };
+
+  const handleProductClick = (product: Product) => {
+    if (linkingBarcode) {
+      if (!isAdmin) {
+        setLinkError("Only admins can link barcodes.");
+        // We still show the modal but with an error and disabled confirm
+        setConfirmLinkProduct(product);
+        return;
+      }
+      setConfirmLinkProduct(product);
     } else {
       navigate(`/products/${product.id}`);
     }
@@ -231,6 +264,97 @@ const ProductList: React.FC = () => {
           </AnimatePresence>
         </div>
       </div>
+
+      {/* Confirmation Modal */}
+      <AnimatePresence>
+        {confirmLinkProduct && (
+          <div className="fixed inset-0 z-[150] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden"
+            >
+              <div className="p-8 text-center space-y-6">
+                {!isAdmin ? (
+                  <div className="bg-amber-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto">
+                    <Lock className="h-8 w-8 text-amber-600" />
+                  </div>
+                ) : (
+                  <div className="bg-blue-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto">
+                    <LinkIcon className="h-8 w-8 text-blue-600" />
+                  </div>
+                )}
+                
+                <div>
+                  <h3 className="text-xl font-bold text-gray-900">
+                    {!isAdmin ? "Admin Access Required" : "Link Barcode?"}
+                  </h3>
+                  {!isAdmin ? (
+                    <div className="mt-4 space-y-3">
+                      <p className="text-gray-600">
+                        Only administrators can link new barcodes to products. Please contact your manager to perform this action.
+                      </p>
+                      <div className="bg-amber-50 p-4 rounded-2xl border border-amber-100 flex items-start space-x-3 text-left">
+                        <AlertTriangle className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
+                        <p className="text-xs text-amber-800">
+                          You are currently logged in as a standard user. Barcode linking is restricted to maintain inventory integrity.
+                        </p>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <p className="text-gray-500 mt-2">
+                        Are you sure you want to link barcode <span className="font-mono font-bold text-gray-900">{linkingBarcode}</span> to:
+                      </p>
+                      <p className="text-lg font-bold text-blue-600 mt-1">{confirmLinkProduct.name}</p>
+                      <p className="text-xs text-gray-400 mt-2 italic">This will add the barcode to the product's list of associated barcodes.</p>
+                    </>
+                  )}
+                </div>
+
+                {linkError && isAdmin && (
+                  <div className="bg-red-50 p-3 rounded-xl text-red-600 text-xs font-medium">
+                    {linkError}
+                  </div>
+                )}
+
+                {linkSuccess && (
+                  <div className="bg-green-50 p-3 rounded-xl text-green-600 text-xs font-medium flex items-center justify-center">
+                    <CheckCircle className="h-4 w-4 mr-2" />
+                    Successfully linked!
+                  </div>
+                )}
+
+                <div className="space-y-3">
+                  {!linkSuccess && (
+                    <button
+                      onClick={handleConfirmLink}
+                      disabled={linking || !isAdmin}
+                      className={cn(
+                        "w-full py-4 font-bold rounded-2xl transition-all shadow-md disabled:opacity-50",
+                        !isAdmin ? "bg-gray-100 text-gray-400 cursor-not-allowed" : "bg-blue-600 text-white hover:bg-blue-700"
+                      )}
+                    >
+                      {linking ? "Linking..." : !isAdmin ? "Confirm Link (Admin Only)" : "Confirm Link"}
+                    </button>
+                  )}
+                  <button
+                    onClick={() => {
+                      setConfirmLinkProduct(null);
+                      setLinkError(null);
+                    }}
+                    disabled={linking}
+                    className="w-full py-4 bg-white border-2 border-gray-200 text-gray-700 font-bold rounded-2xl hover:bg-gray-50 transition-all disabled:opacity-50"
+                  >
+                    {linkSuccess ? "Close" : "Cancel"}
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };

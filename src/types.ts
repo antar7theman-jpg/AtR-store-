@@ -13,6 +13,7 @@ export interface UserProfile {
 export interface Product {
   id: string;
   barcode: string;
+  barcodes: string[];
   name: string;
   quantityPerBox?: number;
   currentStock: number;
@@ -26,10 +27,12 @@ export interface Purchase {
   id: string;
   productId: string;
   quantity: number;
-  price: number;
-  expiryDate: Timestamp;
+  price?: number;
+  expiryDate?: Timestamp;
   createdAt: Timestamp;
   recordedBy: string;
+  type: 'purchase' | 'adjustment';
+  note?: string;
 }
 
 export interface FirestoreErrorInfo {

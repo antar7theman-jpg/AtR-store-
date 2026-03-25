@@ -18,7 +18,12 @@
       "description": "An inventory item.",
       "type": "object",
       "properties": {
-        "barcode": { "type": "string", "description": "Unique barcode for the product." },
+        "barcode": { "type": "string", "description": "Primary barcode for the product." },
+        "barcodes": { 
+          "type": "array", 
+          "items": { "type": "string" },
+          "description": "List of all barcodes associated with the product." 
+        },
         "name": { "type": "string", "description": "Product name." },
         "quantityPerBox": { "type": "number", "description": "Standard quantity per box." },
         "currentStock": { "type": "number", "description": "Total units currently in stock." },

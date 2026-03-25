@@ -86,8 +86,9 @@ service cloud.firestore {
     }
 
     function isValidProduct(data) {
-      return hasRequiredFields(['barcode', 'name', 'currentStock']) &&
+      return hasRequiredFields(['barcode', 'barcodes', 'name', 'currentStock']) &&
              data.barcode is string && data.barcode.size() > 0 &&
+             data.barcodes is list &&
              data.name is string && data.name.size() > 0 &&
              data.currentStock is number &&
              (!('quantityPerBox' in data) || data.quantityPerBox is number) &&

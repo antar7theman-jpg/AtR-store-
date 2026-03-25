@@ -1,20 +1,43 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
-import { X, AlertCircle, RefreshCw, ScanLine, CheckCircle } from 'lucide-react';
+import { X, AlertCircle, RefreshCw, ScanLine, CheckCircle, Zap, ZapOff } from 'lucide-react';
 import { motion } from 'motion/react';
+import { cn } from '../lib/utils';
 
 interface ScannerProps {
   onScan: (decodedText: string) => void;
   onClose: () => void;
+  autoFlash?: boolean;
 }
 
-const Scanner: React.FC<ScannerProps> = ({ onScan, onClose }) => {
+const Scanner: React.FC<ScannerProps> = ({ onScan, onClose, autoFlash = false }) => {
   const [error, setError] = useState<string | null>(null);
   const [isInitializing, setIsInitializing] = useState(false);
   const [isStarted, setIsStarted] = useState(false);
   const [isScanned, setIsScanned] = useState(false);
+  const [hasFlash, setHasFlash] = useState(false);
+  const [isFlashOn, setIsFlashOn] = useState(false);
   const html5QrCodeRef = useRef<Html5Qrcode | null>(null);
   const scannerId = useRef(`reader-${Math.random().toString(36).substring(2, 9)}`);
+
+  const toggleFlash = async () => {
+    if (!html5QrCodeRef.current || !isStarted || !hasFlash) return;
+
+    try {
+      const newState = !isFlashOn;
+      // html5-qrcode doesn't have a direct toggleFlash, but we can use applyVideoConstraints
+      // if the browser supports it via the track
+      const track = html5QrCodeRef.current.getRunningTrackCapabilities();
+      if (track && (track as any).torch) {
+        await (html5QrCodeRef.current as any).applyVideoConstraints({
+          advanced: [{ torch: newState }]
+        });
+        setIsFlashOn(newState);
+      }
+    } catch (err) {
+      console.error("Failed to toggle flash:", err);
+    }
+  };
 
   const startScanner = async () => {
     if (!html5QrCodeRef.current) {
@@ -53,10 +76,11 @@ const Scanner: React.FC<ScannerProps> = ({ onScan, onClose }) => {
       }
 
       const config = {
-        fps: 20,
+        fps: 30,
         qrbox: (viewfinderWidth: number, viewfinderHeight: number) => {
-          const width = Math.min(viewfinderWidth * 0.8, 400);
-          const height = Math.min(viewfinderHeight * 0.4, 200);
+          // Barcodes are usually horizontal, so we want a wider box
+          const width = Math.min(viewfinderWidth * 0.85, 500);
+          const height = Math.min(viewfinderHeight * 0.3, 250);
           return { width, height };
         },
         aspectRatio: undefined,
@@ -95,6 +119,29 @@ const Scanner: React.FC<ScannerProps> = ({ onScan, onClose }) => {
         },
         () => {}
       );
+
+      // Check for flashlight capability after starting
+      try {
+        const capabilities = html5QrCodeRef.current.getRunningTrackCapabilities();
+        if (capabilities && (capabilities as any).torch) {
+          setHasFlash(true);
+          
+          // Auto-enable flash if requested
+          if (autoFlash) {
+            try {
+              await (html5QrCodeRef.current as any).applyVideoConstraints({
+                advanced: [{ torch: true }]
+              });
+              setIsFlashOn(true);
+            } catch (flashErr) {
+              console.error("Failed to auto-enable flash:", flashErr);
+            }
+          }
+        }
+      } catch (e) {
+        console.log("Flashlight capability check failed", e);
+      }
+
       setIsInitializing(false);
     } catch (err: any) {
       console.error("Scanner initialization error:", err);
@@ -148,7 +195,22 @@ const Scanner: React.FC<ScannerProps> = ({ onScan, onClose }) => {
 
   return (
     <div className="fixed inset-0 z-[100] bg-black flex flex-col items-center justify-center">
-      <div className="absolute top-6 right-6 z-[110]">
+      <div className="absolute top-6 right-6 z-[110] flex items-center space-x-4">
+        {hasFlash && isStarted && !isInitializing && !isScanned && (
+          <button
+            onClick={toggleFlash}
+            className={cn(
+              "flex flex-col items-center justify-center p-2 rounded-2xl transition-all backdrop-blur-md active:scale-90 min-w-[64px]",
+              isFlashOn ? "bg-yellow-400 text-black shadow-[0_0_15px_rgba(250,204,21,0.5)]" : "bg-white/20 text-white hover:bg-white/30"
+            )}
+            title={isFlashOn ? "Turn flash off" : "Turn flash on"}
+          >
+            {isFlashOn ? <Zap className="h-6 w-6 fill-current" /> : <ZapOff className="h-6 w-6" />}
+            <span className="text-[10px] font-bold uppercase mt-1 tracking-wider">
+              Flash {isFlashOn ? "On" : "Off"}
+            </span>
+          </button>
+        )}
         <button
           onClick={onClose}
           className="p-3 bg-white/20 text-white rounded-full hover:bg-white/30 transition-all backdrop-blur-md active:scale-90"
@@ -162,16 +224,16 @@ const Scanner: React.FC<ScannerProps> = ({ onScan, onClose }) => {
         
         {/* Scanning UI Overlays */}
         <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-          {/* Viewfinder area */}
-          <div className="w-64 h-64 border-2 border-white/50 rounded-3xl relative">
-            <div className="absolute top-0 left-0 w-8 h-8 border-t-4 border-l-4 border-blue-500 rounded-tl-xl -translate-x-1 -translate-y-1" />
-            <div className="absolute top-0 right-0 w-8 h-8 border-t-4 border-r-4 border-blue-500 rounded-tr-xl translate-x-1 -translate-y-1" />
-            <div className="absolute bottom-0 left-0 w-8 h-8 border-b-4 border-l-4 border-blue-500 rounded-bl-xl -translate-x-1 translate-y-1" />
-            <div className="absolute bottom-0 right-0 w-8 h-8 border-b-4 border-r-4 border-blue-500 rounded-br-xl translate-x-1 translate-y-1" />
+          {/* Viewfinder area - matching the qrbox logic */}
+          <div className="w-[85%] max-w-[500px] h-[30%] max-h-[250px] border-2 border-white/30 rounded-3xl relative">
+            <div className="absolute top-0 left-0 w-10 h-10 border-t-4 border-l-4 border-blue-500 rounded-tl-2xl -translate-x-1 -translate-y-1" />
+            <div className="absolute top-0 right-0 w-10 h-10 border-t-4 border-r-4 border-blue-500 rounded-tr-2xl translate-x-1 -translate-y-1" />
+            <div className="absolute bottom-0 left-0 w-10 h-10 border-b-4 border-l-4 border-blue-500 rounded-bl-2xl -translate-x-1 translate-y-1" />
+            <div className="absolute bottom-0 right-0 w-10 h-10 border-b-4 border-r-4 border-blue-500 rounded-br-2xl translate-x-1 translate-y-1" />
             
             {/* Animated scan line */}
             {!error && isStarted && !isInitializing && !isScanned && (
-              <div className="absolute top-0 left-0 w-full h-1 bg-blue-500 shadow-[0_0_15px_rgba(59,130,246,0.8)] animate-scan" />
+              <div className="absolute top-1/2 left-0 w-full h-1 bg-blue-500 shadow-[0_0_20px_rgba(59,130,246,1)] animate-scan" />
             )}
           </div>
 

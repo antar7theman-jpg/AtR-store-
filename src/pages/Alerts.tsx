@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { collection, onSnapshot } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { Product } from '../types';
-import { AlertTriangle, Calendar, ChevronRight, Package } from 'lucide-react';
+import { AlertTriangle, Calendar, ChevronRight, Package, Search } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import { differenceInDays } from 'date-fns';
@@ -14,6 +14,7 @@ const Alerts: React.FC = () => {
   
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
+  const [searchTerm, setSearchTerm] = useState('');
 
   useEffect(() => {
     const path = 'products';
@@ -28,12 +29,20 @@ const Alerts: React.FC = () => {
     return () => unsubscribe();
   }, []);
 
-  const lowStockAlerts = products.filter(p => p.currentStock <= (p.lowStockThreshold || 0));
+  const lowStockAlerts = products.filter(p => {
+    const matchesSearch = p.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+                         p.barcode.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                         (p.barcodes || []).some(bc => bc.toLowerCase().includes(searchTerm.toLowerCase()));
+    return matchesSearch && p.currentStock <= (p.lowStockThreshold || 0);
+  });
   
   const expiryAlerts = products.filter(p => {
     if (!p.expiryDate) return false;
+    const matchesSearch = p.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+                         p.barcode.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                         (p.barcodes || []).some(bc => bc.toLowerCase().includes(searchTerm.toLowerCase()));
     const daysRemaining = differenceInDays(p.expiryDate.toDate(), new Date());
-    return daysRemaining <= (p.expiryAlertThreshold || 0);
+    return matchesSearch && daysRemaining <= (p.expiryAlertThreshold || 0);
   });
 
   const tabs = [
@@ -56,31 +65,46 @@ const Alerts: React.FC = () => {
         <p className="text-gray-500 mt-1">Inventory items requiring attention</p>
       </div>
 
-      {/* Tabs */}
-      <div className="flex p-1 bg-gray-100 rounded-2xl w-full max-w-md">
-        {tabs.map((tab) => (
-          <button
-            key={tab.id}
-            onClick={() => setSearchParams({ tab: tab.id })}
-            className={cn(
-              "flex-1 flex items-center justify-center space-x-2 py-2.5 text-sm font-bold rounded-xl transition-all",
-              activeTab === tab.id
-                ? "bg-white text-blue-600 shadow-sm"
-                : "text-gray-500 hover:text-gray-700"
-            )}
-          >
-            <tab.icon className="h-4 w-4" />
-            <span>{tab.name}</span>
-            {tab.count > 0 && (
-              <span className={cn(
-                "px-2 py-0.5 rounded-full text-[10px]",
-                activeTab === tab.id ? "bg-blue-100 text-blue-600" : "bg-gray-200 text-gray-600"
-              )}>
-                {tab.count}
-              </span>
-            )}
-          </button>
-        ))}
+      {/* Tabs and Search */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div className="flex p-1 bg-gray-100 rounded-2xl w-full max-w-md">
+          {tabs.map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setSearchParams({ tab: tab.id })}
+              className={cn(
+                "flex-1 flex items-center justify-center space-x-2 py-2.5 text-sm font-bold rounded-xl transition-all",
+                activeTab === tab.id
+                  ? "bg-white text-blue-600 shadow-sm"
+                  : "text-gray-500 hover:text-gray-700"
+              )}
+            >
+              <tab.icon className="h-4 w-4" />
+              <span>{tab.name}</span>
+              {tab.count > 0 && (
+                <span className={cn(
+                  "px-2 py-0.5 rounded-full text-[10px]",
+                  activeTab === tab.id ? "bg-blue-100 text-blue-600" : "bg-gray-200 text-gray-600"
+                )}>
+                  {tab.count}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+
+        <div className="relative w-full md:max-w-xs">
+          <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+            <Search className="h-4 w-4 text-gray-400" />
+          </div>
+          <input
+            type="text"
+            placeholder="Search alerts..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="block w-full pl-10 pr-3 py-2.5 border border-gray-200 rounded-2xl text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all bg-white shadow-sm"
+          />
+        </div>
       </div>
 
       {/* Alert List */}
@@ -119,7 +143,10 @@ const Alerts: React.FC = () => {
                   </motion.div>
                 ))
               ) : (
-                <EmptyState icon={AlertTriangle} message="No low stock alerts" />
+                <EmptyState 
+                  icon={AlertTriangle} 
+                  message={searchTerm ? `No low stock alerts matching "${searchTerm}"` : "No low stock alerts"} 
+                />
               )
             ) : (
               expiryAlerts.length > 0 ? (
@@ -160,7 +187,10 @@ const Alerts: React.FC = () => {
                   );
                 })
               ) : (
-                <EmptyState icon={Calendar} message="No expiry date alerts" />
+                <EmptyState 
+                  icon={Calendar} 
+                  message={searchTerm ? `No expiry alerts matching "${searchTerm}"` : "No expiry date alerts"} 
+                />
               )
             )}
           </AnimatePresence>

@@ -7,7 +7,7 @@ import { useAuth } from '../components/AuthGuard';
 import { 
   ArrowLeft, ScanLine, Package, Barcode, 
   Layers, DollarSign, Calendar, AlertTriangle, 
-  CheckCircle, X, AlertCircle 
+  CheckCircle, X, AlertCircle, Plus, Zap 
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import Scanner from '../components/Scanner';
@@ -22,11 +22,13 @@ const AddEditProduct: React.FC = () => {
   const [loading, setLoading] = useState(isEdit);
   const [submitting, setSubmitting] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
+  const [useFlash, setUseFlash] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Form State
   const [formData, setFormData] = useState({
     barcode: searchParams.get('barcode') || '',
+    barcodes: [searchParams.get('barcode') || ''].filter(Boolean) as string[],
     name: '',
     quantityPerBox: '',
     purchaseQty: '',
@@ -46,6 +48,7 @@ const AddEditProduct: React.FC = () => {
             const data = docSnap.data() as Product;
             setFormData({
               barcode: data.barcode,
+              barcodes: data.barcodes || [data.barcode],
               name: data.name,
               quantityPerBox: data.quantityPerBox?.toString() || '',
               purchaseQty: '', // Not used in edit mode (staff records purchases)
@@ -70,8 +73,39 @@ const AddEditProduct: React.FC = () => {
     setFormData(prev => ({ ...prev, [name]: value }));
   };
 
+  const handleBarcodeChange = (index: number, value: string) => {
+    const newBarcodes = [...formData.barcodes];
+    newBarcodes[index] = value;
+    setFormData(prev => ({ 
+      ...prev, 
+      barcodes: newBarcodes,
+      barcode: newBarcodes[0] || '' // Sync primary barcode
+    }));
+  };
+
+  const addBarcodeField = () => {
+    setFormData(prev => ({ ...prev, barcodes: [...prev.barcodes, ''] }));
+  };
+
+  const removeBarcodeField = (index: number) => {
+    const newBarcodes = formData.barcodes.filter((_, i) => i !== index);
+    setFormData(prev => ({ 
+      ...prev, 
+      barcodes: newBarcodes,
+      barcode: newBarcodes[0] || ''
+    }));
+  };
+
   const handleScan = (barcode: string) => {
-    setFormData(prev => ({ ...prev, barcode }));
+    // Add scanned barcode if it doesn't exist
+    if (!formData.barcodes.includes(barcode)) {
+      const newBarcodes = [...formData.barcodes, barcode].filter(Boolean);
+      setFormData(prev => ({ 
+        ...prev, 
+        barcodes: newBarcodes,
+        barcode: newBarcodes[0] || ''
+      }));
+    }
     setShowScanner(false);
   };
 
@@ -79,23 +113,30 @@ const AddEditProduct: React.FC = () => {
     e.preventDefault();
     if (!isAdmin || !profile) return;
 
+    const filteredBarcodes = formData.barcodes.filter(b => b.trim() !== '');
+    if (filteredBarcodes.length === 0) {
+      setError("At least one barcode is required.");
+      return;
+    }
+
     setSubmitting(true);
     setError(null);
 
     try {
-      // 1. Check if barcode is unique (only on create)
+      // 1. Check if ANY of the barcodes are unique (only on create)
       if (!isEdit) {
-        const q = query(collection(db, 'products'), where('barcode', '==', formData.barcode));
+        const q = query(collection(db, 'products'), where('barcodes', 'array-contains-any', filteredBarcodes));
         const querySnapshot = await getDocs(q);
         if (!querySnapshot.empty) {
-          setError("A product with this barcode already exists.");
+          setError("One or more of these barcodes are already linked to another product.");
           setSubmitting(false);
           return;
         }
       }
 
       const productData: any = {
-        barcode: formData.barcode,
+        barcode: filteredBarcodes[0],
+        barcodes: filteredBarcodes,
         name: formData.name,
         quantityPerBox: parseInt(formData.quantityPerBox) || 0,
         lowStockThreshold: parseInt(formData.lowStockThreshold) || 0,
@@ -163,30 +204,77 @@ const AddEditProduct: React.FC = () => {
       <form onSubmit={handleSubmit} className="space-y-8">
         {/* Barcode Section */}
         <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 space-y-4">
-          <h3 className="text-lg font-bold text-gray-900 flex items-center">
-            <Barcode className="h-5 w-5 mr-2 text-blue-500" />
-            Product Identification
-          </h3>
-          <div className="flex space-x-2">
-            <div className="relative flex-grow">
-              <input
-                type="text"
-                name="barcode"
-                required
-                placeholder="Scan or enter barcode"
-                value={formData.barcode}
-                onChange={handleInputChange}
-                className="block w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-              />
+          <div className="flex items-center justify-between">
+            <h3 className="text-lg font-bold text-gray-900 flex items-center">
+              <Barcode className="h-5 w-5 mr-2 text-blue-500" />
+              Product Barcodes
+            </h3>
+            <div className="flex space-x-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setUseFlash(false);
+                  setShowScanner(true);
+                }}
+                className="px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition-colors flex items-center text-xs font-bold"
+              >
+                <ScanLine className="h-4 w-4 mr-1" />
+                Scan
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setUseFlash(true);
+                  setShowScanner(true);
+                }}
+                className="px-3 py-1.5 bg-amber-50 text-amber-600 rounded-lg hover:bg-amber-100 transition-colors flex items-center text-xs font-bold"
+              >
+                <Zap className="h-4 w-4 mr-1" />
+                Flash
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={() => setShowScanner(true)}
-              className="px-4 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition-colors shadow-sm flex items-center"
-            >
-              <ScanLine className="h-5 w-5" />
-            </button>
           </div>
+
+          <div className="space-y-3">
+            {formData.barcodes.map((barcode, index) => (
+              <div key={index} className="flex space-x-2">
+                <div className="relative flex-grow">
+                  <input
+                    type="text"
+                    required
+                    placeholder="Enter barcode"
+                    value={barcode}
+                    onChange={(e) => handleBarcodeChange(index, e.target.value)}
+                    className="block w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                  {index === 0 && (
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-bold text-blue-500 bg-blue-50 px-2 py-1 rounded">
+                      PRIMARY
+                    </span>
+                  )}
+                </div>
+                {formData.barcodes.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={() => removeBarcodeField(index)}
+                    className="p-3 text-red-500 hover:bg-red-50 rounded-xl transition-colors"
+                  >
+                    <X className="h-5 w-5" />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+
+          <button
+            type="button"
+            onClick={addBarcodeField}
+            className="w-full py-3 border-2 border-dashed border-gray-200 text-gray-400 font-medium rounded-xl hover:border-blue-200 hover:text-blue-500 transition-all flex items-center justify-center"
+          >
+            <Plus className="h-5 w-5 mr-2" />
+            Add Another Barcode
+          </button>
+
           {error && (
             <div className="flex items-center text-red-600 text-sm bg-red-50 p-3 rounded-lg">
               <AlertCircle className="h-4 w-4 mr-2" />
@@ -339,7 +427,11 @@ const AddEditProduct: React.FC = () => {
       {/* Scanner Overlay */}
       <AnimatePresence mode="wait">
         {showScanner && (
-          <Scanner onScan={handleScan} onClose={() => setShowScanner(false)} />
+          <Scanner 
+            onScan={handleScan} 
+            onClose={() => setShowScanner(false)} 
+            autoFlash={useFlash}
+          />
         )}
       </AnimatePresence>
     </div>
