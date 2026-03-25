@@ -1,0 +1,159 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: userId (Firebase Auth UID)
+    // Fields:
+    //   - uid: string (required) - Firebase Auth UID
+    //   - email: string (required, email format) - User's email
+    //   - role: string (required, 'admin' | 'staff') - User's role
+    //   - name: string (required) - User's display name
+    //   - active: boolean (optional) - Account status
+    //
+    // Collection: products
+    // Document ID: productId (auto-generated)
+    // Fields:
+    //   - barcode: string (required, unique) - Product barcode
+    //   - name: string (required) - Product name
+    //   - quantityPerBox: number (optional) - Units per box
+    //   - currentStock: number (required) - Total units in stock
+    //   - lastPurchasePrice: number (optional) - Latest purchase price
+    //   - expiryDate: timestamp (optional) - Expiry date of latest batch
+    //   - lowStockThreshold: number (optional) - Alert threshold for stock
+    //   - expiryAlertThreshold: number (optional) - Alert threshold for expiry (days)
+    //
+    // Collection: purchases
+    // Document ID: purchaseId (auto-generated)
+    // Fields:
+    //   - productId: string (required) - ID of the product
+    //   - quantity: number (required) - Units purchased
+    //   - price: number (required) - Purchase price
+    //   - expiryDate: timestamp (required) - Batch expiry date
+    //   - createdAt: timestamp (required) - Record creation time
+    //   - recordedBy: string (required) - UID of the user
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "antar7theman@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isStaff() {
+      return isAuthenticated() && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'staff';
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      return hasOnlyAllowedFields(['uid', 'email', 'role', 'name', 'active']) &&
+             data.uid is string &&
+             data.email is string && isValidEmail(data.email) &&
+             data.role in ['admin', 'staff'] &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100;
+    }
+
+    function isValidProduct(data) {
+      return hasRequiredFields(['barcode', 'name', 'currentStock']) &&
+             data.barcode is string && data.barcode.size() > 0 &&
+             data.name is string && data.name.size() > 0 &&
+             data.currentStock is number &&
+             (!('quantityPerBox' in data) || data.quantityPerBox is number) &&
+             (!('lastPurchasePrice' in data) || data.lastPurchasePrice is number) &&
+             (!('expiryDate' in data) || data.expiryDate is timestamp) &&
+             (!('lowStockThreshold' in data) || data.lowStockThreshold is number) &&
+             (!('expiryAlertThreshold' in data) || data.expiryAlertThreshold is number);
+    }
+
+    function isValidPurchase(data) {
+      return hasRequiredFields(['productId', 'quantity', 'price', 'expiryDate', 'createdAt', 'recordedBy']) &&
+             data.productId is string &&
+             data.quantity is number && data.quantity > 0 &&
+             data.price is number && data.price >= 0 &&
+             data.expiryDate is timestamp &&
+             data.createdAt is timestamp &&
+             data.recordedBy == request.auth.uid;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      // Users can read their own profile. Admins can read all profiles.
+      allow read: if isOwner(userId) || isAdmin();
+      
+      // Only admins can create or update user profiles.
+      // Exception: The default admin can bootstrap their own profile if it doesn't exist.
+      allow create: if (isAdmin() && isValidUser(request.resource.data)) || 
+                      (isOwner(userId) && request.auth.token.email == "antar7theman@gmail.com" && isValidUser(request.resource.data));
+      
+      allow update: if isAdmin() && isValidUser(request.resource.data);
+      
+      // Only admins can delete users.
+      allow delete: if isAdmin();
+    }
+
+    match /products/{productId} {
+      // All authenticated users can read products.
+      allow read: if isAuthenticated();
+      
+      // Only admins can create or delete products.
+      allow create: if isAdmin() && isValidProduct(request.resource.data);
+      allow delete: if isAdmin();
+      
+      // Admins can update all fields. Staff can update 'currentStock', 'lastPurchasePrice', and 'expiryDate' when recording a purchase.
+      allow update: if (isAdmin() && isValidProduct(request.resource.data)) ||
+                      (isStaff() && isValidProduct(request.resource.data) && 
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['currentStock', 'lastPurchasePrice', 'expiryDate']));
+    }
+
+    match /purchases/{purchaseId} {
+      // All authenticated users can read purchase history.
+      allow read: if isAuthenticated();
+      
+      // All authenticated users can create purchase records.
+      allow create: if isAuthenticated() && isValidPurchase(request.resource.data);
+      
+      // Purchases are immutable.
+      allow update, delete: if false;
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

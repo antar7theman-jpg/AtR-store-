@@ -1,0 +1,61 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "A user of the inventory management system.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "The Firebase Auth UID." },
+        "email": { "type": "string", "format": "email", "description": "The user's email address." },
+        "role": { "type": "string", "enum": ["admin", "staff"], "description": "The user's role." },
+        "name": { "type": "string", "description": "The user's display name." },
+        "active": { "type": "boolean", "description": "Whether the account is active." }
+      },
+      "required": ["uid", "email", "role", "name"]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "An inventory item.",
+      "type": "object",
+      "properties": {
+        "barcode": { "type": "string", "description": "Unique barcode for the product." },
+        "name": { "type": "string", "description": "Product name." },
+        "quantityPerBox": { "type": "number", "description": "Standard quantity per box." },
+        "currentStock": { "type": "number", "description": "Total units currently in stock." },
+        "lastPurchasePrice": { "type": "number", "description": "Price of the most recent purchase." },
+        "expiryDate": { "type": "string", "format": "date-time", "description": "Expiry date of the latest batch." },
+        "lowStockThreshold": { "type": "number", "description": "Minimum units before low stock alert." },
+        "expiryAlertThreshold": { "type": "number", "description": "Days before expiry to trigger alert." }
+      },
+      "required": ["barcode", "name", "currentStock"]
+    },
+    "Purchase": {
+      "title": "Purchase",
+      "description": "A record of a stock purchase.",
+      "type": "object",
+      "properties": {
+        "productId": { "type": "string", "description": "ID of the product purchased." },
+        "quantity": { "type": "number", "description": "Number of units purchased." },
+        "price": { "type": "number", "description": "Purchase price per unit or total (as defined)." },
+        "expiryDate": { "type": "string", "format": "date-time", "description": "Expiry date for this batch." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the purchase was recorded." },
+        "recordedBy": { "type": "string", "description": "UID of the user who recorded the purchase." }
+      },
+      "required": ["productId", "quantity", "price", "expiryDate", "createdAt", "recordedBy"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profiles and roles."
+    },
+    "/products/{productId}": {
+      "schema": "Product",
+      "description": "Product inventory records."
+    },
+    "/purchases/{purchaseId}": {
+      "schema": "Purchase",
+      "description": "Historical purchase records."
+    }
+  }
+}
