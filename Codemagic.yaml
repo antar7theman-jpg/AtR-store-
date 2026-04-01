@@ -1,16 +1,18 @@
 workflows:
   android-workflow:
-    name: Android Build Workflow
+    name: Auto Build APK
     max_build_duration: 60
     instance_type: mac_mini_m1
     scripts:
       - name: Get dependencies
         script: | 
-          # إذا كان المشروع Flutter
           flutter packages pub get
       - name: Build Android APK
         script: | 
-          # أمر البناء
-          flutter build apk --debug
+          flutter build apk --debug --no-pub
     artifacts:
-      - build/**/outputs/**/*.apk
+      - build/app/outputs/flutter-apk/*.apk
+    publishing:
+      email:
+        recipients:
+          - Antar7theman@gmail.com
