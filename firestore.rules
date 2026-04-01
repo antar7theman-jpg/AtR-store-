@@ -7,13 +7,15 @@ service cloud.firestore {
     // ===============================================================
     //
     // Collection: users
-    // Document ID: userId (Firebase Auth UID)
+    // Document ID: userId (Firebase Auth UID or sanitized email for pre-provisioned)
     // Fields:
-    //   - uid: string (required) - Firebase Auth UID
+    //   - uid: string (required) - Firebase Auth UID or placeholder email
     //   - email: string (required, email format) - User's email
     //   - role: string (required, 'admin' | 'staff') - User's role
     //   - name: string (required) - User's display name
     //   - active: boolean (optional) - Account status
+    //   - phone: string (optional) - User's phone number
+    //   - notificationPreferences: map (optional) - User's alert preferences
     //
     // Collection: products
     // Document ID: productId (auto-generated)
@@ -37,6 +39,34 @@ service cloud.firestore {
     //   - createdAt: timestamp (required) - Record creation time
     //   - recordedBy: string (required) - UID of the user
     //
+    // Collection: systemSettings
+    // Document ID: 'default'
+    // Fields:
+    //   - notificationPhone: string (required) - Primary notification phone
+    //   - phoneNumber: string (required) - Secondary notification phone
+    //   - notificationEmail: string (required) - Notification email
+    //   - enableExpiryNotifications: boolean (required) - Toggle for expiry notifications
+    //   - enableLowStockNotifications: boolean (required) - Toggle for low stock notifications
+    //   - enableTaskNotifications: boolean (required) - Toggle for task notifications
+    //   - lastNotificationCheck: timestamp (optional) - Last check time
+    //   - expirySms, expiryEmail, expiryPush: boolean (optional)
+    //   - lowStockSms, lowStockEmail, lowStockPush: boolean (optional)
+    //   - taskSms, taskEmail, taskPush: boolean (optional)
+    //   - enableSmsNotifications, enableNativeSmsNotifications: boolean (optional)
+    //   - enableEmailNotifications, enablePushNotifications: boolean (optional)
+    //
+    // Collection: tasks
+    // Document ID: taskId (auto-generated)
+    // Fields:
+    //   - title: string (required) - Task title
+    //   - description: string (optional) - Task description
+    //   - priority: string (required, 'low' | 'medium' | 'high') - Task priority
+    //   - completed: boolean (required) - Completion status
+    //   - createdAt: timestamp (required) - Creation time
+    //   - dueDate: timestamp (optional) - Due date
+    //   - createdBy: string (required) - UID of creator
+    //   - assignedTo: string (optional) - UID of assigned user
+    //
     // ===============================================================
 
     // ===============================================================
@@ -53,12 +83,17 @@ service cloud.firestore {
 
     function isAdmin() {
       return isAuthenticated() &&
-        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
-          (request.auth.token.email == "antar7theman@gmail.com" && request.auth.token.email_verified == true));
+        (
+          request.auth.token.email.lower() == "antar7theman@gmail.com" ||
+          (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+           get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin')
+        );
     }
 
     function isStaff() {
-      return isAuthenticated() && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'staff';
+      return isAuthenticated() && 
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'staff';
     }
 
     function hasRequiredFields(fields) {
@@ -73,39 +108,110 @@ service cloud.firestore {
       return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
     }
 
+    function isValidNotificationPrefs(prefs) {
+      return prefs is map &&
+             (!('expiry' in prefs) || isValidPrefItem(prefs.expiry)) &&
+             (!('lowStock' in prefs) || isValidPrefItem(prefs.lowStock)) &&
+             (!('task' in prefs) || isValidPrefItem(prefs.task));
+    }
+
+    function isValidPrefItem(item) {
+      return item is map &&
+             (!('sms' in item) || item.sms is bool) &&
+             (!('email' in item) || item.email is bool) &&
+             (!('push' in item) || item.push is bool);
+    }
+
     // ===============================================================
     // Domain Validators
     // ===============================================================
 
     function isValidUser(data) {
-      return hasOnlyAllowedFields(['uid', 'email', 'role', 'name', 'active']) &&
-             data.uid is string &&
-             data.email is string && isValidEmail(data.email) &&
-             data.role in ['admin', 'staff'] &&
-             data.name is string && data.name.size() > 0 && data.name.size() < 100;
+      return data.keys().hasOnly(['uid', 'email', 'role', 'name', 'active', 'phone', 'notificationPreferences']) &&
+             (!('uid' in data) || data.uid is string) &&
+             (!('email' in data) || (data.email is string && isValidEmail(data.email))) &&
+             (!('role' in data) || data.role in ['admin', 'staff']) &&
+             (!('name' in data) || (data.name is string && data.name.size() > 0)) &&
+             (!('active' in data) || data.active is bool) &&
+             (!('phone' in data) || (data.phone is string && data.phone.size() <= 50)) &&
+             (!('notificationPreferences' in data) || isValidNotificationPrefs(data.notificationPreferences));
     }
 
     function isValidProduct(data) {
-      return hasRequiredFields(['barcode', 'barcodes', 'name', 'currentStock']) &&
+      return hasRequiredFields(['barcode', 'name', 'currentStock']) &&
              data.barcode is string && data.barcode.size() > 0 &&
-             data.barcodes is list &&
              data.name is string && data.name.size() > 0 &&
              data.currentStock is number &&
+             (!('active' in data) || data.active is bool) &&
+             (!('barcodes' in data) || data.barcodes is list) &&
              (!('quantityPerBox' in data) || data.quantityPerBox is number) &&
              (!('lastPurchasePrice' in data) || data.lastPurchasePrice is number) &&
              (!('expiryDate' in data) || data.expiryDate is timestamp) &&
              (!('lowStockThreshold' in data) || data.lowStockThreshold is number) &&
-             (!('expiryAlertThreshold' in data) || data.expiryAlertThreshold is number);
+             (!('expiryAlertThreshold' in data) || data.expiryAlertThreshold is number) &&
+             (!('category' in data) || data.category is string) &&
+             (!('imageUrl' in data) || data.imageUrl is string);
     }
 
     function isValidPurchase(data) {
-      return hasRequiredFields(['productId', 'quantity', 'price', 'expiryDate', 'createdAt', 'recordedBy']) &&
+      return hasRequiredFields(['productId', 'quantity', 'createdAt', 'recordedBy', 'type']) &&
              data.productId is string &&
-             data.quantity is number && data.quantity > 0 &&
-             data.price is number && data.price >= 0 &&
-             data.expiryDate is timestamp &&
+             data.quantity is number &&
              data.createdAt is timestamp &&
-             data.recordedBy == request.auth.uid;
+             data.recordedBy == request.auth.uid &&
+             data.type in ['purchase', 'adjustment'] &&
+             (data.type == 'adjustment' || (
+               (!('price' in data) || data.price is number) &&
+               (!('expiryDate' in data) || data.expiryDate is timestamp)
+             ));
+    }
+
+    function isValidTransaction(data) {
+      return hasRequiredFields(['productId', 'productName', 'type', 'quantity', 'previousStock', 'newStock', 'timestamp']) &&
+             data.productId is string &&
+             data.productName is string &&
+             data.type in ['in', 'out'] &&
+             data.quantity is number && data.quantity >= 0 &&
+             data.previousStock is number &&
+             data.newStock is number &&
+             data.timestamp is timestamp;
+    }
+
+    function isValidSystemSettings(data) {
+      return hasRequiredFields(['notificationPhone', 'phoneNumber', 'enableExpiryNotifications']) &&
+             data.notificationPhone is string &&
+             data.phoneNumber is string &&
+             data.enableExpiryNotifications is bool &&
+             (!('notificationEmail' in data) || data.notificationEmail is string) &&
+             (!('enableLowStockNotifications' in data) || data.enableLowStockNotifications is bool) &&
+             (!('enableTaskNotifications' in data) || data.enableTaskNotifications is bool) &&
+             (!('lastNotificationCheck' in data) || data.lastNotificationCheck is timestamp) &&
+             (!('expirySms' in data) || data.expirySms is bool) &&
+             (!('expiryEmail' in data) || data.expiryEmail is bool) &&
+             (!('expiryPush' in data) || data.expiryPush is bool) &&
+             (!('lowStockSms' in data) || data.lowStockSms is bool) &&
+             (!('lowStockEmail' in data) || data.lowStockEmail is bool) &&
+             (!('lowStockPush' in data) || data.lowStockPush is bool) &&
+             (!('taskSms' in data) || data.taskSms is bool) &&
+             (!('taskEmail' in data) || data.taskEmail is bool) &&
+             (!('taskPush' in data) || data.taskPush is bool) &&
+             (!('enableSmsNotifications' in data) || data.enableSmsNotifications is bool) &&
+             (!('enableNativeSmsNotifications' in data) || data.enableNativeSmsNotifications is bool) &&
+             (!('enableEmailNotifications' in data) || data.enableEmailNotifications is bool) &&
+             (!('enablePushNotifications' in data) || data.enablePushNotifications is bool) &&
+             (!('gmailPass' in data) || data.gmailPass is string);
+    }
+
+    function isValidTask(data) {
+      return hasRequiredFields(['title', 'priority', 'completed', 'createdAt', 'createdBy']) &&
+             data.title is string && data.title.size() > 0 &&
+             data.priority in ['low', 'medium', 'high'] &&
+             data.completed is bool &&
+             data.createdAt is timestamp &&
+             data.createdBy is string &&
+             (!('description' in data) || data.description is string) &&
+             (!('dueDate' in data) || data.dueDate is timestamp) &&
+             (!('assignedTo' in data) || data.assignedTo is string);
     }
 
     // ===============================================================
@@ -114,31 +220,36 @@ service cloud.firestore {
 
     match /users/{userId} {
       // Users can read their own profile. Admins can read all profiles.
-      allow read: if isOwner(userId) || isAdmin();
+      allow read: if isOwner(userId) || isAdmin() || (isAuthenticated() && request.auth.token.email == resource.data.email);
       
-      // Only admins can create or update user profiles.
-      // Exception: The default admin can bootstrap their own profile if it doesn't exist.
+      // Allow create if:
+      // 1. Admin
+      // 2. Default admin bootstrap
+      // 3. User claiming a pre-provisioned profile (ID is their UID, email matches)
       allow create: if (isAdmin() && isValidUser(request.resource.data)) || 
-                      (isOwner(userId) && request.auth.token.email == "antar7theman@gmail.com" && isValidUser(request.resource.data));
+                      (isOwner(userId) && request.auth.token.email.lower() == "antar7theman@gmail.com" && isValidUser(request.resource.data)) ||
+                      (isOwner(userId) && isValidUser(request.resource.data) && request.resource.data.email == request.auth.token.email);
       
-      allow update: if isAdmin() && isValidUser(request.resource.data);
+      // Admins can update all profiles. Users can update their own profile (but not role/active status).
+      allow update: if (isAdmin() && isValidUser(request.resource.data)) ||
+                      (isOwner(userId) && isValidUser(request.resource.data) && 
+                       request.resource.data.role == resource.data.role &&
+                       request.resource.data.active == resource.data.active);
       
-      // Only admins can delete users.
-      allow delete: if isAdmin();
+      // Only admins can delete users, or a user deleting their pre-provisioned profile.
+      allow delete: if isAdmin() || (isAuthenticated() && request.auth.token.email == resource.data.email);
     }
 
     match /products/{productId} {
       // All authenticated users can read products.
       allow read: if isAuthenticated();
       
-      // Only admins can create or delete products.
-      allow create: if isAdmin() && isValidProduct(request.resource.data);
-      allow delete: if isAdmin();
+      // Admins and staff can create or delete products.
+      allow create: if (isAdmin() || isStaff()) && isValidProduct(request.resource.data);
+      allow delete: if isAdmin() || isStaff();
       
-      // Admins can update all fields. Staff can update 'currentStock', 'lastPurchasePrice', and 'expiryDate' when recording a purchase.
-      allow update: if (isAdmin() && isValidProduct(request.resource.data)) ||
-                      (isStaff() && isValidProduct(request.resource.data) && 
-                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['currentStock', 'lastPurchasePrice', 'expiryDate']));
+      // Admins and staff can update all fields.
+      allow update: if (isAdmin() || isStaff()) && isValidProduct(request.resource.data);
     }
 
     match /purchases/{purchaseId} {
@@ -148,8 +259,57 @@ service cloud.firestore {
       // All authenticated users can create purchase records.
       allow create: if isAuthenticated() && isValidPurchase(request.resource.data);
       
-      // Purchases are immutable.
-      allow update, delete: if false;
+      // Purchases are immutable for staff. Admins can delete them (e.g. when deleting a product).
+      allow update: if false;
+      allow delete: if isAdmin();
+    }
+
+    match /transactions/{transactionId} {
+      // All authenticated users can read transaction history.
+      allow read: if isAuthenticated();
+      
+      // All authenticated users can create transaction records.
+      allow create: if isAuthenticated() && isValidTransaction(request.resource.data);
+      
+      // Transactions are immutable for staff. Admins can delete them (e.g. when deleting a product).
+      allow update: if false;
+      allow delete: if isAdmin();
+    }
+
+    match /systemSettings/{settingsId} {
+      // All authenticated users can read system settings.
+      allow read: if isAuthenticated();
+      
+      // Admins and staff can update system settings.
+      allow update: if (isAdmin() || isStaff()) && isValidSystemSettings(request.resource.data);
+      
+      // Admins and staff can create system settings.
+      allow create: if (isAdmin() || isStaff()) && isValidSystemSettings(request.resource.data);
+    }
+
+    match /tasks/{taskId} {
+      // All authenticated users can read tasks.
+      allow read: if isAuthenticated();
+      
+      // Any authenticated user can create a task.
+      allow create: if isAuthenticated() && isValidTask(request.resource.data) && request.resource.data.createdBy == request.auth.uid;
+      
+      // Admins, the creator, or the assignee can update a task.
+      allow update: if isAuthenticated() && isValidTask(request.resource.data) && 
+                      (isAdmin() || request.auth.uid == resource.data.createdBy || request.auth.uid == resource.data.assignedTo);
+      
+      // Only admins or the creator can delete a task.
+      allow delete: if isAdmin() || (isAuthenticated() && request.auth.uid == resource.data.createdBy);
+    }
+
+    match /secrets/{secretId} {
+      // Only admins can read or write secrets
+      allow read, write: if isAdmin();
+    }
+
+    match /test/connection {
+      // Allow authenticated users to read the connection test document
+      allow read: if isAuthenticated();
     }
 
     // Default deny

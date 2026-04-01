@@ -30,7 +30,8 @@
         "lastPurchasePrice": { "type": "number", "description": "Price of the most recent purchase." },
         "expiryDate": { "type": "string", "format": "date-time", "description": "Expiry date of the latest batch." },
         "lowStockThreshold": { "type": "number", "description": "Minimum units before low stock alert." },
-        "expiryAlertThreshold": { "type": "number", "description": "Days before expiry to trigger alert." }
+        "expiryAlertThreshold": { "type": "number", "description": "Days before expiry to trigger alert." },
+        "category": { "type": "string", "description": "Product category for organization." }
       },
       "required": ["barcode", "name", "currentStock"]
     },
@@ -47,6 +48,38 @@
         "recordedBy": { "type": "string", "description": "UID of the user who recorded the purchase." }
       },
       "required": ["productId", "quantity", "price", "expiryDate", "createdAt", "recordedBy"]
+    },
+    "SystemSettings": {
+      "title": "System Settings",
+      "description": "Global application settings.",
+      "type": "object",
+      "properties": {
+        "notificationPhone": { "type": "string", "description": "Primary notification phone number." },
+        "phoneNumber": { "type": "string", "description": "Secondary notification phone number." },
+        "notificationEmail": { "type": "string", "description": "Email address for notifications." },
+        "enableExpiryNotifications": { "type": "boolean", "description": "Whether to send expiry notifications." },
+        "enableSmsNotifications": { "type": "boolean", "description": "Whether to send SMS notifications." },
+        "enableEmailNotifications": { "type": "boolean", "description": "Whether to send Email notifications." },
+        "enablePushNotifications": { "type": "boolean", "description": "Whether to send Push notifications." },
+        "lastNotificationCheck": { "type": "string", "format": "date-time", "description": "Last time notifications were checked." }
+      },
+      "required": ["notificationPhone", "phoneNumber", "enableExpiryNotifications"]
+    },
+    "Task": {
+      "title": "Task",
+      "description": "A to-do item for the store.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "description": "Task title." },
+        "description": { "type": "string", "description": "Task description." },
+        "priority": { "type": "string", "enum": ["low", "medium", "high"], "description": "Task priority level." },
+        "completed": { "type": "boolean", "description": "Whether the task is completed." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the task was created." },
+        "dueDate": { "type": "string", "format": "date-time", "description": "Optional due date." },
+        "createdBy": { "type": "string", "description": "UID of the creator." },
+        "assignedTo": { "type": "string", "description": "Optional UID of the assigned user." }
+      },
+      "required": ["title", "priority", "completed", "createdAt", "createdBy"]
     }
   },
   "firestore": {
@@ -61,6 +94,14 @@
     "/purchases/{purchaseId}": {
       "schema": "Purchase",
       "description": "Historical purchase records."
+    },
+    "/systemSettings/{settingsId}": {
+      "schema": "SystemSettings",
+      "description": "Global application settings."
+    },
+    "/tasks/{taskId}": {
+      "schema": "Task",
+      "description": "Store tasks and to-do items."
     }
   }
 }

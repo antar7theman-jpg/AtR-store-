@@ -2,8 +2,9 @@ import React, { useState } from 'react';
 import { signInWithEmailAndPassword, signInWithPopup, GoogleAuthProvider } from 'firebase/auth';
 import { auth } from '../firebase';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Package, Lock, Mail, AlertCircle, Chrome } from 'lucide-react';
+import { Package, Lock, Mail, AlertCircle, Chrome, Languages } from 'lucide-react';
 import { motion } from 'motion/react';
+import { useTranslation } from 'react-i18next';
 
 const Login: React.FC = () => {
   const [email, setEmail] = useState('');
@@ -12,6 +13,7 @@ const Login: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
+  const { t, i18n } = useTranslation();
 
   const from = (location.state as any)?.from?.pathname || "/";
 
@@ -25,9 +27,9 @@ const Login: React.FC = () => {
     } catch (err: any) {
       console.error("Login error:", err);
       if (err.code === 'auth/operation-not-allowed') {
-        setError("Email/Password login is not enabled in the Firebase Console. Please enable it or use Google Sign-In.");
+        setError(t('login.error.emailPasswordDisabled'));
       } else {
-        setError("Invalid email or password. Please try again.");
+        setError(t('login.error.invalidCredentials'));
       }
     } finally {
       setLoading(false);
@@ -43,14 +45,38 @@ const Login: React.FC = () => {
       navigate(from, { replace: true });
     } catch (err: any) {
       console.error("Google login error:", err);
-      setError("Failed to sign in with Google.");
+      setError(t('login.error.googleFailed'));
     } finally {
       setLoading(false);
     }
   };
 
+  const toggleLanguage = () => {
+    const langs = ['en', 'ar', 'fr'];
+    const currentIdx = langs.indexOf(i18n.language.split('-')[0]);
+    const nextIdx = (currentIdx + 1) % langs.length;
+    i18n.changeLanguage(langs[nextIdx]);
+  };
+
+  const currentLang = i18n.language.split('-')[0];
+  const langNames: Record<string, string> = {
+    en: 'EN',
+    ar: 'AR',
+    fr: 'FR'
+  };
+
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col justify-center py-12 sm:px-6 lg:px-8">
+    <div className="min-h-screen bg-gray-50 flex flex-col justify-center py-12 sm:px-6 lg:px-8" dir={i18n.language === 'ar' ? 'rtl' : 'ltr'}>
+      <div className="absolute top-4 right-4 rtl:right-auto rtl:left-4">
+        <button
+          onClick={toggleLanguage}
+          className="flex items-center space-x-2 rtl:space-x-reverse px-3 py-2 bg-white border border-gray-200 rounded-lg shadow-sm text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+        >
+          <Languages className="h-4 w-4" />
+          <span>{langNames[currentLang] || currentLang.toUpperCase()}</span>
+        </button>
+      </div>
+
       <motion.div 
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
@@ -61,11 +87,14 @@ const Login: React.FC = () => {
             <Package className="h-10 w-10 text-white" />
           </div>
         </div>
-        <h2 className="mt-6 text-center text-3xl font-extrabold text-gray-900 tracking-tight">
-          ATR Store Inventory
-        </h2>
+        <div className="mt-6 text-center">
+          <h2 className="text-3xl font-extrabold text-gray-900 tracking-tight leading-none">
+            {t('login.title')}
+          </h2>
+          <span className="text-[10px] text-gray-400 font-medium block mt-1">by antar</span>
+        </div>
         <p className="mt-2 text-center text-sm text-gray-600">
-          Sign in to manage your stock
+          {t('login.subtitle')}
         </p>
       </motion.div>
 
@@ -79,10 +108,10 @@ const Login: React.FC = () => {
           <form className="space-y-6" onSubmit={handleLogin}>
             <div>
               <label htmlFor="email" className="block text-sm font-medium text-gray-700">
-                Email address
+                {t('login.email')}
               </label>
               <div className="mt-1 relative rounded-md shadow-sm">
-                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                <div className="absolute inset-y-0 left-0 rtl:left-auto rtl:right-0 pl-3 rtl:pl-0 rtl:pr-3 flex items-center pointer-events-none">
                   <Mail className="h-5 w-5 text-gray-400" />
                 </div>
                 <input
@@ -93,7 +122,7 @@ const Login: React.FC = () => {
                   required
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  className="block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                  className="block w-full pl-10 rtl:pl-3 rtl:pr-10 pr-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
                   placeholder="you@example.com"
                 />
               </div>
@@ -101,10 +130,10 @@ const Login: React.FC = () => {
 
             <div>
               <label htmlFor="password" className="block text-sm font-medium text-gray-700">
-                Password
+                {t('login.password')}
               </label>
               <div className="mt-1 relative rounded-md shadow-sm">
-                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                <div className="absolute inset-y-0 left-0 rtl:left-auto rtl:right-0 pl-3 rtl:pl-0 rtl:pr-3 flex items-center pointer-events-none">
                   <Lock className="h-5 w-5 text-gray-400" />
                 </div>
                 <input
@@ -115,7 +144,7 @@ const Login: React.FC = () => {
                   required
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                  className="block w-full pl-10 rtl:pl-3 rtl:pr-10 pr-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
                   placeholder="••••••••"
                 />
               </div>
@@ -125,13 +154,13 @@ const Login: React.FC = () => {
               <motion.div 
                 initial={{ opacity: 0, scale: 0.95 }}
                 animate={{ opacity: 1, scale: 1 }}
-                className="bg-red-50 border-l-4 border-red-400 p-4"
+                className="bg-red-50 border-l-4 rtl:border-l-0 rtl:border-r-4 border-red-400 p-4"
               >
                 <div className="flex">
                   <div className="flex-shrink-0">
                     <AlertCircle className="h-5 w-5 text-red-400" />
                   </div>
-                  <div className="ml-3">
+                  <div className="ml-3 rtl:ml-0 rtl:mr-3">
                     <p className="text-sm text-red-700">{error}</p>
                   </div>
                 </div>
@@ -147,7 +176,7 @@ const Login: React.FC = () => {
                 {loading ? (
                   <div className="h-5 w-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
                 ) : (
-                  "Sign in"
+                  t('login.signIn')
                 )}
               </button>
             </div>
@@ -160,7 +189,7 @@ const Login: React.FC = () => {
               </div>
               <div className="relative flex justify-center text-sm">
                 <span className="px-2 bg-white text-gray-500">
-                  Or continue with
+                  {t('login.orContinueWith')}
                 </span>
               </div>
             </div>
@@ -171,15 +200,15 @@ const Login: React.FC = () => {
                 disabled={loading}
                 className="w-full inline-flex justify-center py-2.5 px-4 border border-gray-300 rounded-lg shadow-sm bg-white text-sm font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors"
               >
-                <Chrome className="h-5 w-5 text-red-500 mr-2" />
-                <span>Google</span>
+                <Chrome className="h-5 w-5 text-red-500 mr-2 rtl:mr-0 rtl:ml-2" />
+                <span>{t('login.google')}</span>
               </button>
             </div>
           </div>
 
           <div className="mt-6 text-center">
             <p className="text-xs text-gray-400">
-              Admin access only. Contact your administrator if you don't have an account.
+              {t('login.adminOnly')}
             </p>
           </div>
         </div>

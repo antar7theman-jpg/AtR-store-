@@ -3,6 +3,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import { AuthProvider, AuthGuard } from './components/AuthGuard';
 import Layout from './components/Layout';
 import ErrorBoundary from './components/ErrorBoundary';
+import NotificationManager from './components/NotificationManager';
 
 // Pages
 import Login from './pages/Login';
@@ -13,11 +14,13 @@ import AddEditProduct from './pages/AddEditProduct';
 import Alerts from './pages/Alerts';
 import Settings from './pages/Settings';
 import ScanPage from './pages/ScanPage';
+import Tasks from './pages/Tasks';
 
 export default function App() {
   return (
     <ErrorBoundary>
       <AuthProvider>
+        <NotificationManager />
         <Router>
           <Routes>
             {/* Public Routes */}
@@ -57,7 +60,7 @@ export default function App() {
             <Route
               path="/products/add"
               element={
-                <AuthGuard requiredRole="admin">
+                <AuthGuard>
                   <Layout>
                     <AddEditProduct />
                   </Layout>
@@ -67,7 +70,7 @@ export default function App() {
             <Route
               path="/products/edit/:id"
               element={
-                <AuthGuard requiredRole="admin">
+                <AuthGuard>
                   <Layout>
                     <AddEditProduct />
                   </Layout>
@@ -87,7 +90,7 @@ export default function App() {
             <Route
               path="/settings"
               element={
-                <AuthGuard requiredRole="admin">
+                <AuthGuard>
                   <Layout>
                     <Settings />
                   </Layout>
@@ -99,6 +102,16 @@ export default function App() {
               element={
                 <AuthGuard>
                   <ScanPage />
+                </AuthGuard>
+              }
+            />
+            <Route
+              path="/tasks"
+              element={
+                <AuthGuard>
+                  <Layout>
+                    <Tasks />
+                  </Layout>
                 </AuthGuard>
               }
             />

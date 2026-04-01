@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc, deleteDoc } from 'firebase/firestore';
 import { auth, db } from '../firebase';
 import { UserProfile, UserRole } from '../types';
 import { Navigate, useLocation } from 'react-router-dom';
@@ -33,17 +33,51 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         try {
           const userDoc = await getDoc(doc(db, 'users', user.uid));
           if (userDoc.exists()) {
-            setProfile(userDoc.data() as UserProfile);
+            const data = userDoc.data() as UserProfile;
+            if (user.email?.toLowerCase() === "antar7theman@gmail.com" && data.name === 'Default Admin') {
+              const updatedProfile = { ...data, name: 'antar deffas' };
+              await setDoc(doc(db, 'users', user.uid), updatedProfile);
+              setProfile(updatedProfile);
+            } else {
+              setProfile(data);
+            }
           } else {
+            // Check if there's a pre-provisioned profile by email
+            const sanitizedEmail = user.email?.replace(/[^a-zA-Z0-9]/g, '_');
+            if (sanitizedEmail) {
+              const preDoc = await getDoc(doc(db, 'users', sanitizedEmail));
+              if (preDoc.exists()) {
+                const data = preDoc.data();
+                // Claim the profile: move to UID doc
+                const newProfile = {
+                  ...data,
+                  uid: user.uid,
+                  name: user.displayName || data.name || 'User'
+                } as UserProfile;
+                
+                await setDoc(doc(db, 'users', user.uid), newProfile);
+                await deleteDoc(doc(db, 'users', sanitizedEmail));
+                setProfile(newProfile);
+                setLoading(false);
+                return;
+              }
+            }
+
             // Check if it's the default admin
-            if (user.email === "antar7theman@gmail.com") {
+            if (user.email?.toLowerCase() === "antar7theman@gmail.com") {
               const defaultProfile: UserProfile = {
                 uid: user.uid,
                 email: user.email,
                 role: 'admin',
-                name: user.displayName || 'Default Admin',
+                name: user.displayName || 'antar deffas',
                 active: true,
+                notificationPreferences: {
+                  expiry: { sms: true, email: true, push: true },
+                  lowStock: { sms: true, email: true, push: true },
+                  task: { sms: true, email: true, push: true }
+                }
               };
+              await setDoc(doc(db, 'users', user.uid), defaultProfile);
               setProfile(defaultProfile);
             } else {
               setProfile(null);

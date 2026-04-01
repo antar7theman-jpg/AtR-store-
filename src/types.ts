@@ -1,6 +1,7 @@
 import { Timestamp } from 'firebase/firestore';
 
 export type UserRole = 'admin' | 'staff';
+export type Priority = 'low' | 'medium' | 'high';
 
 export interface UserProfile {
   uid: string;
@@ -8,6 +9,12 @@ export interface UserProfile {
   role: UserRole;
   name: string;
   active?: boolean;
+  phone?: string;
+  notificationPreferences?: {
+    expiry: { sms: boolean; email: boolean; push: boolean };
+    lowStock: { sms: boolean; email: boolean; push: boolean };
+    task: { sms: boolean; email: boolean; push: boolean };
+  };
 }
 
 export interface Product {
@@ -21,6 +28,20 @@ export interface Product {
   expiryDate?: Timestamp;
   lowStockThreshold?: number;
   expiryAlertThreshold?: number;
+  category?: string;
+  imageUrl?: string;
+}
+
+export interface Task {
+  id: string;
+  title: string;
+  description?: string;
+  priority: Priority;
+  completed: boolean;
+  createdAt: Timestamp;
+  dueDate?: Timestamp;
+  createdBy: string;
+  assignedTo?: string;
 }
 
 export interface Purchase {
@@ -33,6 +54,36 @@ export interface Purchase {
   recordedBy: string;
   type: 'purchase' | 'adjustment';
   note?: string;
+}
+
+export interface SystemSettings {
+  id: string;
+  notificationPhone: string;
+  phoneNumber: string;
+  notificationEmail?: string;
+  enableExpiryNotifications: boolean;
+  enableLowStockNotifications?: boolean;
+  enableTaskNotifications?: boolean;
+  
+  // Granular preferences
+  expirySms?: boolean;
+  expiryEmail?: boolean;
+  expiryPush?: boolean;
+  
+  lowStockSms?: boolean;
+  lowStockEmail?: boolean;
+  lowStockPush?: boolean;
+  
+  taskSms?: boolean;
+  taskEmail?: boolean;
+  taskPush?: boolean;
+
+  enableSmsNotifications?: boolean; // Legacy/Global
+  enableNativeSmsNotifications?: boolean;
+  enableEmailNotifications?: boolean; // Legacy/Global
+  enablePushNotifications?: boolean; // Legacy/Global
+  lastNotificationCheck?: Timestamp;
+  gmailPass?: string;
 }
 
 export interface FirestoreErrorInfo {

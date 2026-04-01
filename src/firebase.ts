@@ -1,12 +1,30 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
-import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
+import { getFirestore, doc, getDocFromServer, enableMultiTabIndexedDbPersistence } from 'firebase/firestore';
+import { getStorage } from 'firebase/storage';
 import firebaseConfig from '../firebase-applet-config.json';
 
 // Initialize Firebase SDK
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth();
+export const storage = getStorage(app);
+
+// Enable Firestore persistence for offline support
+if (typeof window !== 'undefined') {
+  enableMultiTabIndexedDbPersistence(db).catch((err) => {
+    if (err.code === 'failed-precondition') {
+      // Multiple tabs open, persistence can only be enabled in one tab at a a time.
+      // With multi-tab persistence, this shouldn't happen unless there's a conflict.
+      console.warn('Firestore persistence failed: Multiple tabs open');
+    } else if (err.code === 'unimplemented') {
+      // The current browser does not support all of the features required to enable persistence
+      console.warn('Firestore persistence failed: Browser not supported');
+    } else {
+      console.error('Firestore persistence failed:', err);
+    }
+  });
+}
 
 export enum OperationType {
   CREATE = 'create',
@@ -63,12 +81,13 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
 async function testConnection() {
   try {
     // This is a simple connection test to ensure the client is online and config is correct.
+    // We use getDocFromServer to force a network request.
     await getDocFromServer(doc(db, 'test', 'connection'));
   } catch (error) {
     if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.error("Please check your Firebase configuration. The client appears to be offline.");
+      console.error("Please check your Firebase configuration. The client is offline.");
     }
-    // Other errors (like permission denied) are expected if the document doesn't exist or rules block it.
+    // Skip logging for other errors (like document not found), as this is simply a connection test.
   }
 }
 

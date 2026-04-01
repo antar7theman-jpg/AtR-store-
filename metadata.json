@@ -1,5 +1,5 @@
 {
   "name": "ATR Store Inventory Manager",
   "description": "Mobile-first inventory and stock management with barcode scanning and automated alerts.",
-  "requestFramePermissions": ["camera"]
+  "requestFramePermissions": ["camera", "notifications"]
 }

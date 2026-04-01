@@ -15,6 +15,7 @@
     "moduleDetection": "force",
     "allowJs": true,
     "jsx": "react-jsx",
+    "types": ["vite-plugin-pwa/client"],
     "paths": {
       "@/*": [
         "./*"
@@ -22,5 +23,6 @@
     },
     "allowImportingTsExtensions": true,
     "noEmit": true
-  }
+  },
+  "exclude": ["android", "node_modules", "dist", "capacitor.config.ts"]
 }
