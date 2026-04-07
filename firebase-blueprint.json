@@ -7,9 +7,11 @@
       "properties": {
         "uid": { "type": "string", "description": "The Firebase Auth UID." },
         "email": { "type": "string", "format": "email", "description": "The user's email address." },
-        "role": { "type": "string", "enum": ["admin", "staff"], "description": "The user's role." },
+        "role": { "type": "string", "enum": ["admin", "staff"], "description": "The user's role, determining their permissions within the system." },
         "name": { "type": "string", "description": "The user's display name." },
-        "active": { "type": "boolean", "description": "Whether the account is active." }
+        "photoUrl": { "type": "string", "description": "Optional URL to the user's avatar image." },
+        "active": { "type": "boolean", "description": "Whether the account is active." },
+        "teamIds": { "type": "array", "items": { "type": "string" }, "description": "List of team IDs the user belongs to." }
       },
       "required": ["uid", "email", "role", "name"]
     },
@@ -56,14 +58,21 @@
       "properties": {
         "notificationPhone": { "type": "string", "description": "Primary notification phone number." },
         "phoneNumber": { "type": "string", "description": "Secondary notification phone number." },
-        "notificationEmail": { "type": "string", "description": "Email address for notifications." },
+        "notificationEmail": { "type": "string", "description": "Primary email address for notifications." },
+        "notificationEmails": { 
+          "type": "array", 
+          "items": { "type": "string" },
+          "description": "Additional email addresses for notifications." 
+        },
         "enableExpiryNotifications": { "type": "boolean", "description": "Whether to send expiry notifications." },
+        "enableLowStockNotifications": { "type": "boolean", "description": "Whether to send low stock notifications." },
+        "enableTaskNotifications": { "type": "boolean", "description": "Whether to send task notifications." },
         "enableSmsNotifications": { "type": "boolean", "description": "Whether to send SMS notifications." },
         "enableEmailNotifications": { "type": "boolean", "description": "Whether to send Email notifications." },
         "enablePushNotifications": { "type": "boolean", "description": "Whether to send Push notifications." },
         "lastNotificationCheck": { "type": "string", "format": "date-time", "description": "Last time notifications were checked." }
       },
-      "required": ["notificationPhone", "phoneNumber", "enableExpiryNotifications"]
+      "required": ["notificationPhone", "phoneNumber", "notificationEmail", "enableExpiryNotifications"]
     },
     "Task": {
       "title": "Task",
@@ -74,12 +83,39 @@
         "description": { "type": "string", "description": "Task description." },
         "priority": { "type": "string", "enum": ["low", "medium", "high"], "description": "Task priority level." },
         "completed": { "type": "boolean", "description": "Whether the task is completed." },
+        "status": { "type": "string", "enum": ["pending", "in-progress", "completed"], "description": "Current status of the task." },
         "createdAt": { "type": "string", "format": "date-time", "description": "When the task was created." },
         "dueDate": { "type": "string", "format": "date-time", "description": "Optional due date." },
         "createdBy": { "type": "string", "description": "UID of the creator." },
-        "assignedTo": { "type": "string", "description": "Optional UID of the assigned user." }
+        "assignedTo": { "type": "string", "description": "Optional UID of the assigned user." },
+        "assignedTeamId": { "type": "string", "description": "Optional ID of the assigned team." }
       },
-      "required": ["title", "priority", "completed", "createdAt", "createdBy"]
+      "required": ["title", "priority", "completed", "status", "createdAt", "createdBy"]
+    },
+    "Team": {
+      "title": "Team",
+      "description": "A group of users.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Team name." },
+        "description": { "type": "string", "description": "Team description." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the team was created." },
+        "memberUids": { "type": "array", "items": { "type": "string" }, "description": "List of user UIDs in the team." }
+      },
+      "required": ["name", "createdAt", "memberUids"]
+    },
+    "ChatMessage": {
+      "title": "Chat Message",
+      "description": "A message in the group chat.",
+      "type": "object",
+      "properties": {
+        "text": { "type": "string", "description": "The message content." },
+        "senderId": { "type": "string", "description": "UID of the sender." },
+        "senderName": { "type": "string", "description": "Name of the sender." },
+        "senderPhotoUrl": { "type": "string", "description": "Optional photo URL of the sender." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the message was sent." }
+      },
+      "required": ["text", "senderId", "senderName", "createdAt"]
     }
   },
   "firestore": {
@@ -102,6 +138,22 @@
     "/tasks/{taskId}": {
       "schema": "Task",
       "description": "Store tasks and to-do items."
+    },
+    "/teams/{teamId}": {
+      "schema": "Team",
+      "description": "User teams."
+    },
+    "/chatMessages/{messageId}": {
+      "schema": "ChatMessage",
+      "description": "Group chat messages."
+    },
+    "/pushSubscriptions/{subId}": {
+      "schema": "object",
+      "description": "Browser push notification subscriptions."
+    },
+    "/secrets/{secretId}": {
+      "schema": "object",
+      "description": "Sensitive system secrets like VAPID keys."
     }
   }
 }

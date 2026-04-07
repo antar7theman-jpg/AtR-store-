@@ -23,92 +23,15 @@ const sendAlertToAllChannels = async (
   settings: SystemSettings, 
   message: string, 
   subject: string,
-  channels: { sms?: boolean; email?: boolean; push?: boolean }
+  channels: { push?: boolean; email?: boolean; sms?: boolean },
+  targetUser?: UserProfile
 ) => {
-  const results = { sms: 0, email: 0, push: 0 };
+  const results = { push: 0, email: 0, sms: 0 };
 
-  // 1. SMS (Twilio)
-  if (channels.sms && settings.enableSmsNotifications === true) {
-    const phones = [settings.notificationPhone, settings.phoneNumber].filter(Boolean);
-    for (const phone of phones) {
-      try {
-        const response = await fetch('/api/send-sms', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ to: phone, message })
-        });
-        if (response.ok) {
-          results.sms++;
-        } else {
-          const errorData = await response.json();
-          console.error(`Twilio SMS Error for ${phone}:`, errorData);
-        }
-      } catch (err) {
-        console.error(`Network error sending SMS to ${phone}:`, err);
-      }
-    }
-  }
-
-  // 1b. Native SMS (Manual)
-  if (channels.sms && settings.enableNativeSmsNotifications) {
-    const phones = [settings.notificationPhone, settings.phoneNumber].filter(Boolean);
-    if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-      for (const phone of phones) {
-        try {
-          const notificationOptions = {
-            body: `TAP TO SEND SMS: ${message.substring(0, 100)}...`,
-            icon: '/favicon.ico',
-            tag: `sms-alert-${phone}`,
-            requireInteraction: true,
-            badge: '/favicon.ico',
-            data: { 
-              url: `sms:${phone}?body=${encodeURIComponent(message)}`,
-              isSms: true
-            }
-          };
-
-          if ('serviceWorker' in navigator) {
-            const registration = await navigator.serviceWorker.ready;
-            await registration.showNotification(subject, notificationOptions);
-          } else {
-            // Fallback for environments without service worker (unlikely in this app)
-            const notification = new Notification(subject, notificationOptions);
-            notification.onclick = () => {
-              window.open(notificationOptions.data.url);
-              window.focus();
-              notification.close();
-            };
-          }
-        } catch (err) {
-          console.error('Error showing native notification:', err);
-        }
-      }
-    } else {
-      console.warn('Native SMS enabled but notification permission not granted or Notification API missing.');
-    }
-  }
-
-  // 2. Email (Gmail)
-  if (channels.email && settings.enableEmailNotifications && settings.notificationEmail) {
-    try {
-      const response = await fetch('/api/send-email', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          to: settings.notificationEmail, 
-          subject: subject, 
-          message: message 
-        })
-      });
-      if (response.ok) results.email++;
-    } catch (err) {
-      console.error(`Error sending Email to ${settings.notificationEmail}:`, err);
-    }
-  }
-
-  // 3. Push Notifications
+  // Push Notifications
   if (channels.push && settings.enablePushNotifications) {
     try {
+      console.log('Sending push notification to server...');
       const response = await fetch('/api/send-push', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -117,9 +40,92 @@ const sendAlertToAllChannels = async (
           message: message 
         })
       });
-      if (response.ok) results.push++;
+      
+      if (response.ok) {
+        results.push++;
+        console.log('Push notification sent successfully');
+      } else {
+        const errorText = await response.text();
+        let displayError = errorText;
+        try {
+          const parsed = JSON.parse(errorText);
+          displayError = parsed.error || errorText;
+        } catch {
+          // Not JSON
+        }
+        console.error(`Server error sending push: ${response.status} ${displayError}`);
+        // We don't throw here to allow other channels to proceed
+      }
     } catch (err) {
-      console.error(`Error sending Push notification:`, err);
+      console.error(`Network error sending Push notification:`, err);
+      if (err instanceof Error) {
+        console.error(`Error message: ${err.message}`);
+        console.error(`Error stack: ${err.stack}`);
+      }
+    }
+  }
+
+  // Email Notifications
+  if (channels.email && settings.enableEmailNotifications && settings.gmailUser && settings.gmailPass) {
+    const to = targetUser?.email || settings.gmailUser;
+    try {
+      console.log(`Sending email to ${to}...`);
+      const response = await fetch('/api/send-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          to,
+          subject,
+          text: message,
+          html: `<div style="font-family: sans-serif; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
+                  <h2 style="color: #2563eb;">ATR Store Alert</h2>
+                  <p>${message}</p>
+                  <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;" />
+                  <p style="font-size: 12px; color: #666;">This is an automated notification from your Inventory Management System.</p>
+                </div>`,
+          gmailUser: settings.gmailUser,
+          gmailPass: settings.gmailPass
+        })
+      });
+      if (response.ok) {
+        results.email++;
+        console.log('Email sent successfully');
+      } else {
+        const errorText = await response.text();
+        console.error(`Server error sending email: ${response.status} ${errorText}`);
+      }
+    } catch (err) {
+      console.error('Error sending Email:', err);
+    }
+  }
+
+  // SMS Notifications
+  if (channels.sms && settings.enableSmsNotifications && settings.twilioSid && settings.twilioAuthToken && settings.twilioFromNumber) {
+    const to = targetUser?.phoneNumber;
+    if (to) {
+      try {
+        console.log(`Sending SMS to ${to}...`);
+        const response = await fetch('/api/send-sms', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            to,
+            message: `${subject}: ${message}`,
+            twilioSid: settings.twilioSid,
+            twilioAuthToken: settings.twilioAuthToken,
+            twilioFromNumber: settings.twilioFromNumber
+          })
+        });
+        if (response.ok) {
+          results.sms++;
+          console.log('SMS sent successfully');
+        } else {
+          const errorText = await response.text();
+          console.error(`Server error sending SMS: ${response.status} ${errorText}`);
+        }
+      } catch (err) {
+        console.error('Error sending SMS:', err);
+      }
     }
   }
 
@@ -142,45 +148,32 @@ const sendAlertToUsers = async (
     const usersSnapshot = await getDocs(usersQuery);
     const users = usersSnapshot.docs.map(doc => ({ uid: doc.id, ...doc.data() } as UserProfile));
 
+    const settingsDoc = await getDoc(doc(db, 'systemSettings', 'default'));
+    if (!settingsDoc.exists()) return;
+    const settings = settingsDoc.data() as SystemSettings;
+
     for (const user of users) {
-      const prefs = user.notificationPreferences?.[type];
-      if (!prefs) continue;
-
-      // SMS
-      if (prefs.sms && user.phone) {
-        try {
-          await fetch('/api/send-sms', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ to: user.phone, message })
-          });
-        } catch (err) {
-          console.error(`Error sending SMS to user ${user.uid}:`, err);
-        }
-      }
-
-      // Email
-      if (prefs.email && user.email) {
-        try {
-          await fetch('/api/send-email', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ to: user.email, subject, message })
-          });
-        } catch (err) {
-          console.error(`Error sending Email to user ${user.uid}:`, err);
-        }
-      }
-
-      // Push (Note: Push is currently global/broadcast in this app, but we could make it targeted)
-      // For now, we'll just rely on the global push if the user has it enabled in their browser
+      // Use user's preferences or default to all enabled if not set
+      const prefs = user.notificationPreferences?.[type] || { push: true, email: true, sms: true };
+      
+      await sendAlertToAllChannels(
+        settings,
+        message,
+        subject,
+        {
+          push: prefs.push && settings[`${type}Push` as keyof SystemSettings] !== false,
+          email: prefs.email && settings[`${type}Email` as keyof SystemSettings] !== false,
+          sms: prefs.sms && settings[`${type}Sms` as keyof SystemSettings] !== false
+        },
+        user
+      );
     }
   } catch (err) {
     console.error('Error in sendAlertToUsers:', err);
   }
 };
 
-export const checkAndSendExpiryNotifications = async (force = false) => {
+export const checkAndSendDailyAlerts = async (force = false) => {
   const settingsPath = 'systemSettings/default';
   const productsPath = 'products';
 
@@ -193,8 +186,8 @@ export const checkAndSendExpiryNotifications = async (force = false) => {
     }
 
     const settings = settingsDoc.data() as SystemSettings;
-    if (!settings.enableExpiryNotifications) {
-      console.log('Expiry notifications are disabled.');
+    if (!settings.enableExpiryNotifications && !settings.enableLowStockNotifications) {
+      console.log('All notifications are disabled.');
       return { success: false, message: 'Notifications are disabled.' };
     }
 
@@ -203,9 +196,12 @@ export const checkAndSendExpiryNotifications = async (force = false) => {
       const lastCheck = settings.lastNotificationCheck.toDate();
       const now = new Date();
       
-      // 1. Only run automated checks after 08:00 AM
-      if (now.getHours() < 8) {
-        console.log('Too early for automated alerts. Waiting until 08:00 AM.');
+      // 1. Only run automated checks after 08:30 AM
+      const minutes = now.getHours() * 60 + now.getMinutes();
+      const targetMinutes = 8 * 60 + 30; // 08:30 AM
+
+      if (minutes < targetMinutes) {
+        console.log('Too early for automated alerts. Waiting until 08:30 AM.');
         return { success: true, message: 'Too early for automated alerts.', count: 0, skipped: true };
       }
 
@@ -228,37 +224,56 @@ export const checkAndSendExpiryNotifications = async (force = false) => {
     const products = productsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Product));
 
     // 3. Filter products nearing expiry
-    const expiringProducts = products.filter(p => {
+    const expiringProducts = settings.enableExpiryNotifications ? products.filter(p => {
       if (!p.expiryDate) return false;
       const expiryDate = p.expiryDate.toDate();
       const daysRemaining = differenceInDays(expiryDate, new Date());
-      return daysRemaining <= (p.expiryAlertThreshold || 7); // Default to 7 days if not set
-    });
+      return daysRemaining <= (p.expiryAlertThreshold || 7);
+    }) : [];
 
-    if (expiringProducts.length === 0) {
-      console.log('No products nearing expiry.');
-      return { success: true, message: 'No products nearing expiry.', count: 0 };
+    // 4. Filter products with low stock
+    const lowStockProducts = settings.enableLowStockNotifications ? products.filter(p => {
+      return p.currentStock <= (p.lowStockThreshold || 5);
+    }) : [];
+
+    if (expiringProducts.length === 0 && lowStockProducts.length === 0) {
+      console.log('No alerts to send.');
+      return { success: true, message: 'No alerts to send.', count: 0 };
     }
 
-    // 4. Prepare notification message
-    const productList = expiringProducts.map(p => 
-      `- ${p.name} (Barcode: ${p.barcode}, Expiry: ${p.expiryDate ? formatDate(p.expiryDate.toDate()) : 'N/A'})`
-    ).join('\n');
+    // 5. Prepare notification message
+    let message = "DAILY INVENTORY ALERT SUMMARY\n\n";
+    let hasAlerts = false;
 
-    const message = `EXPIRY ALERT: The following products are nearing expiry:\n${productList}`;
-    const subject = "Inventory Expiry Alert";
+    if (expiringProducts.length > 0) {
+      hasAlerts = true;
+      message += "EXPIRY ALERTS:\n";
+      message += expiringProducts.map(p => 
+        `- ${p.name} (Barcode: ${p.barcode}, Expiry: ${p.expiryDate ? formatDate(p.expiryDate.toDate()) : 'N/A'})`
+      ).join('\n') + "\n\n";
+    }
 
-    // 5. Send notifications via all enabled channels
+    if (lowStockProducts.length > 0) {
+      hasAlerts = true;
+      message += "LOW STOCK ALERTS:\n";
+      message += lowStockProducts.map(p => 
+        `- ${p.name} (Barcode: ${p.barcode}, Stock: ${p.currentStock}, Threshold: ${p.lowStockThreshold || 5})`
+      ).join('\n') + "\n";
+    }
+
+    const subject = "Inventory Daily Alerts Summary";
+
+    // 6. Send notifications via all enabled channels
     const results = await sendAlertToAllChannels(settings, message, subject, {
-      sms: settings.expirySms ?? true,
-      email: settings.expiryEmail ?? true,
-      push: settings.expiryPush ?? true
+      push: true, // Always send push if triggered
+      email: settings.expiryEmail || settings.lowStockEmail || true,
+      sms: settings.expirySms || settings.lowStockSms || true
     });
 
     // Send to individual users based on their preferences
-    await sendAlertToUsers(message, subject, 'expiry');
+    await sendAlertToUsers(message, subject, 'expiry'); // Using 'expiry' as a general type for daily report
 
-    // 6. Update last check time
+    // 7. Update last check time
     try {
       await updateDoc(doc(db, 'systemSettings', 'default'), {
         lastNotificationCheck: Timestamp.now()
@@ -269,18 +284,15 @@ export const checkAndSendExpiryNotifications = async (force = false) => {
     }
 
     const summary = [];
-    if (results.sms > 0) summary.push(`Twilio SMS (${results.sms})`);
-    if (settings.enableNativeSmsNotifications) summary.push(`Native SMS (Manual)`);
-    if (results.email > 0) summary.push(`Email (${results.email})`);
     if (results.push > 0) summary.push(`Push (${results.push})`);
 
     return { 
       success: true, 
-      message: summary.length > 0 ? `Notifications sent via: ${summary.join(', ')}.` : 'Failed to send notifications. Check server logs.', 
-      count: expiringProducts.length 
+      message: summary.length > 0 ? `Daily alerts sent at 08:30 AM.` : 'Daily check completed.', 
+      count: expiringProducts.length + lowStockProducts.length 
     };
   } catch (error) {
-    console.error('Error in checkAndSendExpiryNotifications:', error);
+    console.error('Error in checkAndSendDailyAlerts:', error);
     return { success: false, message: error instanceof Error ? error.message : 'An error occurred while sending notifications.' };
   }
 };
@@ -296,9 +308,9 @@ export const sendLowStockAlert = async (product: Product) => {
     const subject = "Low Stock Alert";
     
     await sendAlertToAllChannels(settings, message, subject, {
-      sms: settings.lowStockSms ?? true,
+      push: settings.lowStockPush ?? true,
       email: settings.lowStockEmail ?? true,
-      push: settings.lowStockPush ?? true
+      sms: settings.lowStockSms ?? true
     });
 
     // Send to individual users based on their preferences
@@ -315,50 +327,174 @@ export const sendTaskAlert = async (task: any, assignedUser?: any) => {
     const settings = settingsDoc.data() as SystemSettings;
     if (!settings.enableTaskNotifications) return;
 
-    const message = `TASK ALERT: New task assigned: ${task.title}. Priority: ${task.priority}. Due: ${task.dueDate ? formatDate(task.dueDate.toDate()) : 'N/A'}`;
-    const subject = "New Task Assigned";
+    const isUnassigned = !assignedUser;
+    const message = isUnassigned
+      ? `TASK ALERT: Unassigned task: ${task.title}. Priority: ${task.priority}. Due: ${task.dueDate ? formatDate(task.dueDate.toDate()) : 'N/A'}`
+      : `TASK ALERT: Task assigned to ${assignedUser.name}: ${task.title}. Priority: ${task.priority}. Due: ${task.dueDate ? formatDate(task.dueDate.toDate()) : 'N/A'}`;
+    
+    const subject = isUnassigned ? "Unassigned Task Alert" : "Task Assigned Alert";
     
     await sendAlertToAllChannels(settings, message, subject, {
-      sms: settings.taskSms ?? true,
+      push: settings.taskPush ?? true,
       email: settings.taskEmail ?? true,
-      push: settings.taskPush ?? true
+      sms: settings.taskSms ?? true
     });
 
-    // Send to the assigned user specifically if provided, otherwise all active users
+    // Send to the assigned user if specified, otherwise to all active users
     await sendAlertToUsers(message, subject, 'task', assignedUser?.uid);
   } catch (error) {
     console.error('Error sending task alert:', error);
   }
 };
 
+export const sendTaskCompletionAlert = async (task: any, completedBy: string) => {
+  try {
+    const settingsDoc = await getDoc(doc(db, 'systemSettings', 'default'));
+    if (!settingsDoc.exists()) return;
+    const settings = settingsDoc.data() as SystemSettings;
+    if (!settings.enableTaskNotifications) return;
+
+    const message = `TASK COMPLETED: ${task.title}. Completed by: ${completedBy}.`;
+    const subject = "Task Completed Alert";
+    
+    await sendAlertToAllChannels(settings, message, subject, {
+      push: settings.taskPush ?? true,
+      email: settings.taskEmail ?? true,
+      sms: settings.taskSms ?? true
+    });
+
+    // Send to all active users
+    await sendAlertToUsers(message, subject, 'task');
+  } catch (error) {
+    console.error('Error sending task completion alert:', error);
+  }
+};
+
 export const subscribeToPushNotifications = async () => {
-  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
     console.warn('Push notifications not supported');
     return false;
   }
 
   try {
+    // Check current permission
+    let permission = Notification.permission;
+    
+    if (permission === 'denied') {
+      console.warn('Push notification permission denied by user');
+      return false;
+    }
+
+    if (permission === 'default') {
+      permission = await Notification.requestPermission();
+    }
+
+    if (permission !== 'granted') {
+      return false;
+    }
+
     const registration = await navigator.serviceWorker.ready;
+    console.log('Service Worker ready for subscription');
     
     // Get public key from server
-    const response = await fetch('/api/push-key');
-    const { publicKey } = await response.json();
+    let response;
+    let retries = 3;
+    while (retries > 0) {
+      console.log(`Fetching VAPID key (attempt ${4 - retries}/3)...`);
+      response = await fetch('/api/push-key');
+      if (response.status === 503) {
+        console.log('VAPID keys still initializing, retrying in 2 seconds...');
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        retries--;
+        continue;
+      }
+      break;
+    }
+
+    if (!response || !response.ok) {
+      const errorText = response ? await response.text() : 'Network error';
+      throw new Error(`Failed to fetch VAPID public key: ${response?.status} ${errorText}`);
+    }
     
+    const { publicKey } = await response.json();
+    if (!publicKey) throw new Error('VAPID public key is empty');
+    console.log('VAPID public key received');
+
     const subscription = await registration.pushManager.subscribe({
       userVisibleOnly: true,
       applicationServerKey: urlBase64ToUint8Array(publicKey)
     });
+    console.log('Push subscription created:', subscription.endpoint);
     
     // Send subscription to server
-    await fetch('/api/push-subscribe', {
+    const subscribeResponse = await fetch('/api/push-subscribe', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(subscription)
     });
     
+    if (!subscribeResponse.ok) {
+      console.error('Failed to save subscription on server:', subscribeResponse.status);
+      if (subscribeResponse.status === 404) {
+        throw new Error('Push subscription endpoint not found (404). Please ensure the server is running correctly.');
+      }
+      const errorData = await subscribeResponse.json().catch(() => ({ error: 'Unknown server error' }));
+      throw new Error(errorData.error || `Server error: ${subscribeResponse.status}`);
+    }
+    
+    console.log('Push subscription saved on server successfully');
     return true;
   } catch (error) {
-    console.error('Failed to subscribe to push notifications:', error);
+    if (error instanceof Error && error.name === 'NotAllowedError') {
+      console.warn('Push notification permission denied');
+    } else {
+      console.error('Failed to subscribe to push notifications:', error);
+    }
     return false;
+  }
+};
+
+export const testPush = async () => {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+    return { success: false, message: 'Push notifications not supported' };
+  }
+
+  try {
+    // Check if in iframe
+    if (window.self !== window.top && Notification.permission === 'default') {
+      console.warn('Push notifications might be blocked in the AI Studio preview iframe. Try opening the app in a new tab.');
+    }
+
+    const registration = await navigator.serviceWorker.ready;
+    let subscription = await registration.pushManager.getSubscription();
+    
+    if (!subscription) {
+      console.log('No active subscription found, attempting to re-subscribe...');
+      const subscribed = await subscribeToPushNotifications();
+      if (!subscribed) {
+        return { success: false, message: 'No active subscription found and failed to re-subscribe. Please ensure you have granted notification permission.' };
+      }
+      subscription = await registration.pushManager.getSubscription();
+    }
+    
+    if (!subscription) {
+      return { success: false, message: 'Failed to retrieve push subscription after re-subscribing.' };
+    }
+    
+    const response = await fetch('/api/test-push', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subscription })
+    });
+    
+    if (response.ok) {
+      return { success: true, message: 'Test notification sent!' };
+    } else {
+      const error = await response.json();
+      return { success: false, message: error.error || 'Failed to send test notification' };
+    }
+  } catch (error) {
+    console.error('Error testing push notification:', error);
+    return { success: false, message: error instanceof Error ? error.message : 'An error occurred' };
   }
 };

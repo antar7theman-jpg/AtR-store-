@@ -12,55 +12,13 @@ export default defineConfig(({mode}) => {
       tailwindcss(),
       VitePWA({
         registerType: 'autoUpdate',
-        includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'mask-icon.svg', 'robots.txt'],
-        workbox: {
-          globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+        strategies: 'injectManifest',
+        srcDir: 'src',
+        filename: 'sw.js',
+        injectManifest: {
           maximumFileSizeToCacheInBytes: 5 * 1024 * 1024, // 5MB
-          runtimeCaching: [
-            {
-              urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
-              handler: 'CacheFirst',
-              options: {
-                cacheName: 'google-fonts-cache',
-                expiration: {
-                  maxEntries: 10,
-                  maxAgeSeconds: 60 * 60 * 24 * 365 // <== 365 days
-                },
-                cacheableResponse: {
-                  statuses: [0, 200]
-                }
-              }
-            },
-            {
-              urlPattern: /^https:\/\/fonts\.gstatic\.com\/.*/i,
-              handler: 'CacheFirst',
-              options: {
-                cacheName: 'gstatic-fonts-cache',
-                expiration: {
-                  maxEntries: 10,
-                  maxAgeSeconds: 60 * 60 * 24 * 365 // <== 365 days
-                },
-                cacheableResponse: {
-                  statuses: [0, 200]
-                }
-              }
-            },
-            {
-              urlPattern: /^https:\/\/picsum\.photos\/.*/i,
-              handler: 'StaleWhileRevalidate',
-              options: {
-                cacheName: 'images-cache',
-                expiration: {
-                  maxEntries: 50,
-                  maxAgeSeconds: 60 * 60 * 24 * 30 // <== 30 days
-                },
-                cacheableResponse: {
-                  statuses: [0, 200]
-                }
-              }
-            }
-          ]
         },
+        includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'mask-icon.svg', 'robots.txt'],
         manifest: {
           name: 'ATR Store Inventory Manager',
           short_name: 'ATR Inventory',

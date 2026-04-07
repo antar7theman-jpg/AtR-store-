@@ -1,10 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { doc, getDoc, setDoc, updateDoc, collection, addDoc, serverTimestamp, Timestamp, query, where, getDocs } from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { ref, uploadBytes, getDownloadURL, uploadString } from 'firebase/storage';
 import { db, storage, handleFirestoreError, OperationType } from '../firebase';
+import { toast } from 'sonner';
 import { Product } from '../types';
 import { useAuth } from '../components/AuthGuard';
+import { compressImage } from '../lib/utils';
+import { ImageCache } from '../lib/imageCache';
 import { 
   ArrowLeft, ScanLine, Package, Barcode, 
   Layers, DollarSign, Calendar, AlertTriangle, 
@@ -21,9 +24,16 @@ const AddEditProduct: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const { isAdmin, isStaff, profile } = useAuth();
+  const { isAdmin, isStaff, isUser, profile } = useAuth();
   const canManage = isAdmin || isStaff;
   const isEdit = !!id;
+
+  useEffect(() => {
+    if (!isAdmin && !isStaff) {
+      navigate('/');
+      toast.error(t('common.unauthorized', { defaultValue: 'You are not authorized to access this page' }));
+    }
+  }, [isAdmin, isStaff, navigate, t]);
 
   const [loading, setLoading] = useState(isEdit);
   const [submitting, setSubmitting] = useState(false);
@@ -147,10 +157,18 @@ const AddEditProduct: React.FC = () => {
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      setImageFile(file);
       const reader = new FileReader();
-      reader.onloadend = () => {
-        setImagePreview(reader.result as string);
+      reader.onloadend = async () => {
+        const base64 = reader.result as string;
+        try {
+          // Compress immediately for faster upload and better local storage
+          const compressed = await compressImage(base64, 800, 800, 0.6);
+          setImagePreview(compressed);
+          // We'll use the compressed base64 for upload instead of the raw file
+        } catch (err) {
+          console.error("Error compressing image:", err);
+          setImagePreview(base64);
+        }
       };
       reader.readAsDataURL(file);
     }
@@ -179,11 +197,17 @@ const AddEditProduct: React.FC = () => {
       let finalImageUrl = formData.imageUrl;
 
       // 0. Upload image if selected
-      if (imageFile) {
+      if (imagePreview && imagePreview.startsWith('data:')) {
         try {
-          const storageRef = ref(storage, `products/${Date.now()}_${imageFile.name}`);
-          const snapshot = await uploadBytes(storageRef, imageFile);
+          const storageRef = ref(storage, `products/${Date.now()}_product.jpg`);
+          // Use uploadString for compressed base64
+          const snapshot = await uploadString(storageRef, imagePreview, 'data_url');
           finalImageUrl = await getDownloadURL(snapshot.ref);
+          
+          // Save to local cache for instant access if we have an ID
+          if (id) {
+            await ImageCache.save(id, imagePreview);
+          }
         } catch (err) {
           console.error("Error uploading image:", err);
           setError(t('products.errorUploadingImage'));
@@ -237,6 +261,11 @@ const AddEditProduct: React.FC = () => {
         try {
           productRef = await addDoc(collection(db, 'products'), productData);
           
+          // Save to local cache for instant access
+          if (imagePreview) {
+            await ImageCache.save(productRef.id, imagePreview);
+          }
+
           // Check for low stock alert on initial creation
           if (qty <= (productData.lowStockThreshold || 0)) {
             const { sendLowStockAlert } = await import('../services/notificationService');
@@ -269,6 +298,10 @@ const AddEditProduct: React.FC = () => {
         }
 
         if (productRef) {
+          // Save to local cache with the new ID
+          if (imagePreview && imagePreview.startsWith('data:')) {
+            await ImageCache.save(productRef.id, imagePreview);
+          }
           navigate(`/products/${productRef.id}`);
         }
       }

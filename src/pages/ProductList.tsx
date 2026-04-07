@@ -2,17 +2,19 @@ import React, { useEffect, useState } from 'react';
 import { collection, onSnapshot, query, orderBy, doc, updateDoc, deleteDoc, writeBatch, where, getDocs } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { Product } from '../types';
-import { Search, Plus, Package, AlertTriangle, Calendar, ChevronRight, Link as LinkIcon, X, CheckCircle, Lock, Filter, Trash2, Tag, CheckSquare, Square, Edit2 } from 'lucide-react';
+import { Search, Plus, Package, AlertTriangle, Calendar, ChevronRight, Link as LinkIcon, X, CheckCircle, Lock, Filter, Trash2, Tag, CheckSquare, Square, Edit2, ScanLine } from 'lucide-react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../components/AuthGuard';
 import { motion, AnimatePresence } from 'motion/react';
 import { differenceInDays } from 'date-fns';
 import { cn } from '../lib/utils';
+import { CachedImage } from '../components/CachedImage';
 import { useTranslation } from 'react-i18next';
 
 const ProductList: React.FC = () => {
   const { isAdmin, isStaff } = useAuth();
   const canManage = isAdmin || isStaff;
+  const canDelete = isAdmin;
   const location = useLocation();
   const navigate = useNavigate();
   const { t, i18n } = useTranslation();
@@ -141,12 +143,12 @@ const ProductList: React.FC = () => {
   };
 
   const handleBulkDelete = async () => {
-    if (!canManage || selectedProductIds.length === 0) return;
+    if (!isAdmin || selectedProductIds.length === 0) return;
     setShowBulkDeleteConfirm(true);
   };
 
   const confirmBulkDelete = async () => {
-    if (!canManage || selectedProductIds.length === 0) return;
+    if (!isAdmin || selectedProductIds.length === 0) return;
 
     setIsBulkOperating(true);
     try {
@@ -186,7 +188,7 @@ const ProductList: React.FC = () => {
   };
 
   const handleBulkCategoryUpdate = async () => {
-    if (!canManage || selectedProductIds.length === 0 || !bulkCategory) return;
+    if (!isAdmin || selectedProductIds.length === 0 || !bulkCategory) return;
 
     setIsBulkOperating(true);
     try {
@@ -210,12 +212,12 @@ const ProductList: React.FC = () => {
 
   const handleDeleteProduct = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!canManage) return;
+    if (!isAdmin) return;
     setShowDeleteConfirm(id);
   };
 
   const confirmDeleteProduct = async () => {
-    if (!showDeleteConfirm || !canManage) return;
+    if (!showDeleteConfirm || !isAdmin) return;
 
     setIsBulkOperating(true);
     try {
@@ -262,18 +264,27 @@ const ProductList: React.FC = () => {
     <div className="space-y-6">
       <div className="flex flex-col md:flex-row md:items-center md:justify-between space-y-4 md:space-y-0">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900 tracking-tight">{t('products.title')}</h1>
-          <p className="text-gray-500 mt-1">{t('products.subtitle')}</p>
+          <h1 className="text-3xl font-bold text-gray-900 dark:text-white tracking-tight">{t('products.title')}</h1>
+          <p className="text-gray-500 dark:text-gray-400 mt-1">{t('products.subtitle')}</p>
         </div>
-        {canManage && (
+        <div className="flex items-center space-x-3 rtl:space-x-reverse">
           <Link
-            to="/products/add"
-            className="inline-flex items-center justify-center px-4 py-2.5 border border-transparent text-sm font-medium rounded-xl shadow-sm text-white bg-blue-600 hover:bg-blue-700 transition-all"
+            to="/scan"
+            className="inline-flex items-center justify-center px-4 py-2.5 border border-gray-200 dark:border-gray-800 text-sm font-medium rounded-xl shadow-sm text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-900 hover:bg-gray-50 dark:hover:bg-gray-800 transition-all"
           >
-            <Plus className="mr-2 rtl:mr-0 rtl:ml-2 h-5 w-5" />
-            {t('products.addProduct')}
+            <ScanLine className="mr-2 rtl:mr-0 rtl:ml-2 h-5 w-5" />
+            {t('nav.scan', { defaultValue: 'Scan' })}
           </Link>
-        )}
+          {canManage && (
+            <Link
+              to="/products/add"
+              className="inline-flex items-center justify-center px-4 py-2.5 border border-transparent text-sm font-medium rounded-xl shadow-sm text-white bg-blue-600 hover:bg-blue-700 transition-all"
+            >
+              <Plus className="mr-2 rtl:mr-0 rtl:ml-2 h-5 w-5" />
+              {t('products.addProduct')}
+            </Link>
+          )}
+        </div>
       </div>
 
       {/* Linking Banner */}
@@ -309,29 +320,40 @@ const ProductList: React.FC = () => {
 
       {/* Search & Filter Bar */}
       <div className="flex flex-col md:flex-row gap-4">
-        <div className="relative flex-grow">
-          <div className="absolute inset-y-0 left-0 rtl:left-auto rtl:right-0 pl-3 rtl:pl-0 rtl:pr-3 flex items-center pointer-events-none">
-            <Search className="h-5 w-5 text-gray-400" />
+        <div className="relative flex-grow group">
+          <div className="absolute inset-y-0 left-0 rtl:left-auto rtl:right-0 pl-4 rtl:pl-0 rtl:pr-4 flex items-center pointer-events-none">
+            <Search className={cn(
+              "h-5 w-5 transition-colors",
+              searchTerm ? "text-blue-500" : "text-gray-400 dark:text-gray-500 group-focus-within:text-blue-500"
+            )} />
           </div>
           <input
             type="text"
             placeholder={t('products.searchPlaceholder')}
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className="block w-full pl-10 rtl:pl-3 rtl:pr-10 pr-3 py-3 border border-gray-200 rounded-2xl bg-white shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 sm:text-sm transition-all"
+            className="block w-full pl-12 rtl:pl-4 rtl:pr-12 pr-12 py-4 border-2 border-gray-100 dark:border-gray-800 rounded-2xl bg-gray-50/50 dark:bg-gray-900/50 shadow-sm focus:outline-none focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 focus:bg-white dark:focus:bg-gray-900 sm:text-base transition-all placeholder:text-gray-400 dark:placeholder:text-gray-600 font-medium dark:text-white"
           />
+          {searchTerm && (
+            <button
+              onClick={() => setSearchTerm('')}
+              className="absolute inset-y-0 right-0 rtl:right-auto rtl:left-0 pr-4 rtl:pr-0 rtl:pl-4 flex items-center text-gray-400 hover:text-gray-600 transition-colors"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          )}
         </div>
         
         <div className="flex gap-2">
-          {canManage && filteredProducts.length > 0 && !linkingBarcode && (
+          {isAdmin && filteredProducts.length > 0 && !linkingBarcode && (
             <button
               onClick={toggleSelectAll}
-              className="flex items-center px-4 py-3 border border-gray-200 rounded-2xl bg-white shadow-sm hover:bg-gray-50 transition-all text-sm font-medium text-gray-700"
+              className="flex items-center px-4 py-3 border border-gray-200 dark:border-gray-800 rounded-2xl bg-white dark:bg-gray-900 shadow-sm hover:bg-gray-50 dark:hover:bg-gray-800 transition-all text-sm font-medium text-gray-700 dark:text-gray-300"
             >
               {selectedProductIds.length === filteredProducts.length ? (
-                <CheckSquare className="h-4 w-4 mr-2 rtl:mr-0 rtl:ml-2 text-blue-600" />
+                <CheckSquare className="h-4 w-4 mr-2 rtl:mr-0 rtl:ml-2 text-blue-600 dark:text-blue-400" />
               ) : (
-                <Square className="h-4 w-4 mr-2 rtl:mr-0 rtl:ml-2 text-gray-400" />
+                <Square className="h-4 w-4 mr-2 rtl:mr-0 rtl:ml-2 text-gray-400 dark:text-gray-600" />
               )}
               {selectedProductIds.length === filteredProducts.length ? t('products.deselectAll') : t('products.selectAll')}
             </button>
@@ -339,19 +361,19 @@ const ProductList: React.FC = () => {
 
           <div className="relative min-w-[160px]">
             <div className="absolute inset-y-0 left-0 rtl:left-auto rtl:right-0 pl-3 rtl:pl-0 rtl:pr-3 flex items-center pointer-events-none">
-              <Filter className="h-4 w-4 text-gray-400" />
+              <Filter className="h-4 w-4 text-gray-400 dark:text-gray-500" />
             </div>
             <select
               value={selectedCategory}
               onChange={(e) => setSelectedCategory(e.target.value)}
-              className="block w-full pl-10 rtl:pl-3 rtl:pr-10 pr-10 py-3 border border-gray-200 rounded-2xl bg-white shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 sm:text-sm transition-all appearance-none"
+              className="block w-full pl-10 rtl:pl-3 rtl:pr-10 pr-10 py-3 border border-gray-200 dark:border-gray-800 rounded-2xl bg-white dark:bg-gray-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 sm:text-sm transition-all appearance-none dark:text-white"
             >
               {categories.map(cat => (
-                <option key={cat} value={cat}>{cat === 'all' ? t('products.allCategories') : cat}</option>
+                <option key={cat} value={cat} className="dark:bg-gray-900">{cat === 'all' ? t('products.allCategories') : cat}</option>
               ))}
             </select>
             <div className="absolute inset-y-0 right-0 rtl:right-auto rtl:left-0 pr-3 rtl:pr-0 rtl:pl-3 flex items-center pointer-events-none">
-              <ChevronRight className="h-4 w-4 text-gray-400 rotate-90" />
+              <ChevronRight className="h-4 w-4 text-gray-400 dark:text-gray-500 rotate-90" />
             </div>
           </div>
         </div>
@@ -359,12 +381,12 @@ const ProductList: React.FC = () => {
 
       {/* Bulk Action Bar */}
       <AnimatePresence>
-        {selectedProductIds.length > 0 && canManage && (
+        {selectedProductIds.length > 0 && isAdmin && (
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 20 }}
-            className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[100] bg-gray-900 text-white px-6 py-4 rounded-3xl shadow-2xl flex items-center space-x-6 rtl:space-x-reverse border border-white/10 backdrop-blur-md"
+            className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[100] bg-gray-900 dark:bg-gray-800 text-white px-6 py-4 rounded-3xl shadow-2xl flex items-center space-x-6 rtl:space-x-reverse border border-white/10 backdrop-blur-md"
           >
             <div className="flex items-center space-x-2 rtl:space-x-reverse pr-6 rtl:pr-0 rtl:pl-6 border-r rtl:border-r-0 rtl:border-l border-white/20">
               <span className="bg-blue-600 text-white text-xs font-bold px-2 py-1 rounded-full">
@@ -403,68 +425,82 @@ const ProductList: React.FC = () => {
       </AnimatePresence>
 
       {/* Product List */}
-      <div className="bg-white shadow-sm rounded-2xl border border-gray-100 overflow-hidden">
-        <div className="divide-y divide-gray-100">
+      <div className="bg-white dark:bg-gray-900 shadow-sm rounded-2xl border border-gray-100 dark:border-gray-800 overflow-hidden transition-colors">
+        <div className="divide-y divide-gray-100 dark:divide-gray-800">
           <AnimatePresence mode="wait">
             {filteredProducts.length > 0 ? (
-              filteredProducts.map((product) => {
+              filteredProducts.map((product, index) => {
                 const { isLowStock, isExpiring } = getAlertStatus(product);
                 return (
                   <motion.div
                     key={product.id}
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.95 }}
+                    transition={{ duration: 0.2, delay: index * 0.03 }}
                   >
                     <div
                       onClick={() => handleProductClick(product)}
                       className={cn(
-                        "w-full text-left rtl:text-right block hover:bg-gray-50 transition-colors px-6 py-5 group cursor-pointer",
-                        linkingBarcode && "hover:bg-blue-50",
-                        selectedProductIds.includes(product.id) && "bg-blue-50/50"
+                        "w-full text-left rtl:text-right block transition-all duration-200 px-6 py-5 group cursor-pointer relative",
+                        index % 2 !== 0 ? "bg-gray-50/30 dark:bg-gray-800/10" : "bg-white dark:bg-gray-900",
+                        "hover:bg-blue-50/50 dark:hover:bg-blue-900/10 hover:shadow-inner",
+                        linkingBarcode && "hover:bg-blue-100 dark:hover:bg-blue-900/30",
+                        selectedProductIds.includes(product.id) && "bg-blue-100/50 dark:bg-blue-900/30",
+                        isExpiring && "border-l-4 border-red-500",
+                        !isExpiring && isLowStock && "border-l-4 border-amber-500"
                       )}
                     >
                       <div className="flex items-center justify-between">
                         <div className="flex items-center space-x-4 rtl:space-x-reverse">
-                          {canManage && !linkingBarcode && (
+                          {isAdmin && !linkingBarcode && (
                             <div 
                               onClick={(e) => toggleSelectProduct(product.id, e)}
-                              className="p-1 hover:bg-gray-200 rounded-lg transition-colors"
+                              className="p-1 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-lg transition-colors"
                             >
                               {selectedProductIds.includes(product.id) ? (
-                                <CheckSquare className="h-5 w-5 text-blue-600" />
+                                <CheckSquare className="h-5 w-5 text-blue-600 dark:text-blue-400" />
                               ) : (
-                                <Square className="h-5 w-5 text-gray-300" />
+                                <Square className="h-5 w-5 text-gray-300 dark:text-gray-600" />
                               )}
                             </div>
                           )}
                           <div className={cn(
-                            "w-12 h-12 rounded-xl overflow-hidden flex-shrink-0 border border-gray-100",
-                            isLowStock ? "bg-amber-100 text-amber-600" : 
-                            isExpiring ? "bg-red-100 text-red-600" : 
-                            linkingBarcode ? "bg-blue-600 text-white" : "bg-blue-50 text-blue-600"
+                            "w-14 h-14 rounded-2xl overflow-hidden flex-shrink-0 border-2 transition-transform group-hover:scale-105 shadow-sm",
+                            isLowStock ? "border-amber-200 dark:border-amber-900/50" : 
+                            isExpiring ? "border-red-200 dark:border-red-900/50" : 
+                            "border-gray-100 dark:border-gray-800"
                           )}>
                             {product.imageUrl ? (
-                              <img 
+                              <CachedImage 
+                                cacheKey={product.id}
                                 src={product.imageUrl} 
                                 alt={product.name} 
                                 className="w-full h-full object-cover"
-                                referrerPolicy="no-referrer"
                               />
                             ) : (
-                              <div className="w-full h-full flex items-center justify-center">
-                                <Package className="h-6 w-6" />
+                              <div className={cn(
+                                "w-full h-full flex items-center justify-center",
+                                isLowStock ? "bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400" :
+                                isExpiring ? "bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400" :
+                                "bg-gray-50 dark:bg-gray-800 text-gray-400 dark:text-gray-500"
+                              )}>
+                                <Package className="h-7 w-7" />
                               </div>
                             )}
                           </div>
-                          <div>
-                            <h3 className="text-base font-bold text-gray-900">{product.name}</h3>
-                            <div className="flex items-center space-x-2 rtl:space-x-reverse">
-                              <p className="text-sm text-gray-500">Barcode: {product.barcode}</p>
+                          <div className="min-w-0">
+                            <h3 className="text-base font-bold text-gray-900 dark:text-white truncate group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
+                              {product.name}
+                            </h3>
+                            <div className="flex items-center space-x-2 rtl:space-x-reverse mt-0.5">
+                              <p className="text-xs font-mono text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">
+                                {product.barcode}
+                              </p>
                               {product.category && (
                                 <>
-                                  <span className="text-gray-300">•</span>
-                                  <span className="text-xs font-medium text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">
+                                  <span className="text-gray-300 dark:text-gray-700">•</span>
+                                  <span className="text-[10px] font-bold uppercase tracking-wider text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30 px-2 py-0.5 rounded-md">
                                     {product.category}
                                   </span>
                                 </>
@@ -473,32 +509,55 @@ const ProductList: React.FC = () => {
                           </div>
                         </div>
                         
-                        <div className="flex items-center space-x-6 rtl:space-x-reverse">
-                          <div className="hidden sm:flex flex-col items-end rtl:items-start">
-                            <span className={cn(
-                              "text-sm font-bold",
-                              isLowStock ? "text-amber-600" : "text-gray-900"
-                            )}>
-                              {product.currentStock} {t('products.units')}
-                            </span>
-                            <span className="text-xs text-gray-400">{t('products.inStock')}</span>
+                        <div className="flex items-center space-x-4 sm:space-x-8 rtl:space-x-reverse">
+                          <div className="hidden md:flex flex-col items-end rtl:items-start min-w-[100px]">
+                            <div className="flex items-center space-x-1.5 rtl:space-x-reverse">
+                              <span className={cn(
+                                "text-lg font-black tracking-tight",
+                                isLowStock ? "text-amber-600 dark:text-amber-400" : "text-gray-900 dark:text-white"
+                              )}>
+                                {product.currentStock}
+                              </span>
+                              <span className="text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase">{t('products.units')}</span>
+                            </div>
+                            <div className="flex items-center">
+                              {isLowStock ? (
+                                <span className="text-[9px] font-black uppercase text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 px-1.5 py-0.5 rounded leading-none">
+                                  {t('products.lowStock')}
+                                </span>
+                              ) : (
+                                <span className="text-[9px] font-bold uppercase text-gray-400 dark:text-gray-500 leading-none">
+                                  {t('products.inStock')}
+                                </span>
+                              )}
+                            </div>
                           </div>
                           
-                          <div className="flex space-x-2 rtl:space-x-reverse">
+                          <div className="flex items-center space-x-2 rtl:space-x-reverse">
                             {isLowStock && (
-                              <div className="bg-amber-100 p-1.5 rounded-lg" title={t('products.lowStock')}>
-                                <AlertTriangle className="h-4 w-4 text-amber-600" />
-                              </div>
+                              <motion.div 
+                                animate={{ scale: [1, 1.1, 1] }}
+                                transition={{ repeat: Infinity, duration: 2 }}
+                                className="bg-amber-100 dark:bg-amber-900/30 p-2 rounded-xl border border-amber-200 dark:border-amber-800/50 shadow-sm" 
+                                title={t('products.lowStock')}
+                              >
+                                <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+                              </motion.div>
                             )}
                             {isExpiring && (
-                              <div className="bg-red-100 p-1.5 rounded-lg" title={t('products.expiringSoon')}>
-                                <Calendar className="h-4 w-4 text-red-600" />
-                              </div>
+                              <motion.div 
+                                animate={{ opacity: [1, 0.6, 1] }}
+                                transition={{ repeat: Infinity, duration: 1.5 }}
+                                className="bg-red-100 dark:bg-red-900/30 p-2 rounded-xl border border-red-200 dark:border-red-800/50 shadow-sm" 
+                                title={t('products.expiringSoon')}
+                              >
+                                <Calendar className="h-4 w-4 text-red-600 dark:text-red-400" />
+                              </motion.div>
                             )}
                           </div>
                           
                           {linkingBarcode ? (
-                            <div className="bg-blue-100 text-blue-600 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider">
+                            <div className="bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider">
                               {t('products.linkHere')}
                             </div>
                           ) : (
@@ -510,21 +569,24 @@ const ProductList: React.FC = () => {
                                       e.stopPropagation();
                                       navigate(`/products/edit/${product.id}`);
                                     }}
-                                    className="p-2 text-gray-300 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-all opacity-0 group-hover:opacity-100"
+                                    className="p-2 text-gray-300 dark:text-gray-600 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-xl transition-all opacity-0 group-hover:opacity-100"
                                     title={t('common.edit')}
                                   >
                                     <Edit2 className="h-5 w-5" />
                                   </button>
                                   <button
                                     onClick={(e) => handleDeleteProduct(product.id, e)}
-                                    className="p-2 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded-xl transition-all opacity-0 group-hover:opacity-100"
+                                    className={cn(
+                                      "p-2 text-gray-300 dark:text-gray-600 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-xl transition-all opacity-0 group-hover:opacity-100",
+                                      !isAdmin && "hidden"
+                                    )}
                                     title={t('common.delete')}
                                   >
                                     <Trash2 className="h-5 w-5" />
                                   </button>
                                 </div>
                               )}
-                              <ChevronRight className="h-5 w-5 text-gray-300 rtl:rotate-180" />
+                              <ChevronRight className="h-5 w-5 text-gray-300 dark:text-gray-600 rtl:rotate-180" />
                             </div>
                           )}
                         </div>
@@ -535,11 +597,11 @@ const ProductList: React.FC = () => {
               })
             ) : (
               <div className="px-6 py-20 text-center">
-                <div className="bg-gray-50 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-4">
-                  <Package className="h-10 w-10 text-gray-300" />
+                <div className="bg-gray-50 dark:bg-gray-800 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-4">
+                  <Package className="h-10 w-10 text-gray-300 dark:text-gray-600" />
                 </div>
-                <h3 className="text-lg font-medium text-gray-900">{t('products.noProductsFound')}</h3>
-                <p className="text-gray-500 mt-1">{t('products.noProductsSubtitle')}</p>
+                <h3 className="text-lg font-medium text-gray-900 dark:text-white">{t('products.noProductsFound')}</h3>
+                <p className="text-gray-500 dark:text-gray-400 mt-1">{t('products.noProductsSubtitle')}</p>
               </div>
             )}
           </AnimatePresence>
@@ -554,54 +616,54 @@ const ProductList: React.FC = () => {
               initial={{ opacity: 0, scale: 0.9, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.9, y: 20 }}
-              className="bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden"
+              className="bg-white dark:bg-gray-900 rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden border border-gray-100 dark:border-gray-800"
             >
               <div className="p-8 text-center space-y-6">
                 {!isAdmin ? (
-                  <div className="bg-amber-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto">
-                    <Lock className="h-8 w-8 text-amber-600" />
+                  <div className="bg-amber-100 dark:bg-amber-900/30 w-16 h-16 rounded-full flex items-center justify-center mx-auto">
+                    <Lock className="h-8 w-8 text-amber-600 dark:text-amber-400" />
                   </div>
                 ) : (
-                  <div className="bg-blue-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto">
-                    <LinkIcon className="h-8 w-8 text-blue-600" />
+                  <div className="bg-blue-100 dark:bg-blue-900/30 w-16 h-16 rounded-full flex items-center justify-center mx-auto">
+                    <LinkIcon className="h-8 w-8 text-blue-600 dark:text-blue-400" />
                   </div>
                 )}
                 
                 <div>
-                  <h3 className="text-xl font-bold text-gray-900">
+                  <h3 className="text-xl font-bold text-gray-900 dark:text-white">
                     {!canManage ? t('products.adminAccessRequired') : t('products.confirmLink')}
                   </h3>
                   {!isAdmin ? (
                     <div className="mt-4 space-y-3">
-                      <p className="text-gray-600">
+                      <p className="text-gray-600 dark:text-gray-400">
                         {t('products.adminAccessSubtitle')}
                       </p>
-                      <div className="bg-amber-50 p-4 rounded-2xl border border-amber-100 flex items-start space-x-3 rtl:space-x-reverse text-left rtl:text-right">
-                        <AlertTriangle className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
-                        <p className="text-xs text-amber-800">
+                      <div className="bg-amber-50 dark:bg-amber-900/20 p-4 rounded-2xl border border-amber-100 dark:border-amber-900/30 flex items-start space-x-3 rtl:space-x-reverse text-left rtl:text-right">
+                        <AlertTriangle className="h-5 w-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                        <p className="text-xs text-amber-800 dark:text-amber-200">
                           {t('products.adminAccessWarning')}
                         </p>
                       </div>
                     </div>
                   ) : (
                     <>
-                      <p className="text-gray-500 mt-2">
+                      <p className="text-gray-500 dark:text-gray-400 mt-2">
                         {t('products.confirmLinkSubtitle', { barcode: linkingBarcode })}
                       </p>
-                      <p className="text-lg font-bold text-blue-600 mt-1">{confirmLinkProduct.name}</p>
-                      <p className="text-xs text-gray-400 mt-2 italic">{t('products.confirmLinkNote')}</p>
+                      <p className="text-lg font-bold text-blue-600 dark:text-blue-400 mt-1">{confirmLinkProduct.name}</p>
+                      <p className="text-xs text-gray-400 dark:text-gray-500 mt-2 italic">{t('products.confirmLinkNote')}</p>
                     </>
                   )}
                 </div>
 
                 {linkError && canManage && (
-                  <div className="bg-red-50 p-3 rounded-xl text-red-600 text-xs font-medium">
+                  <div className="bg-red-50 dark:bg-red-900/20 p-3 rounded-xl text-red-600 dark:text-red-400 text-xs font-medium">
                     {linkError}
                   </div>
                 )}
 
                 {linkSuccess && (
-                  <div className="bg-green-50 p-3 rounded-xl text-green-600 text-xs font-medium flex items-center justify-center">
+                  <div className="bg-green-50 dark:bg-green-900/20 p-3 rounded-xl text-green-600 dark:text-green-400 text-xs font-medium flex items-center justify-center">
                     <CheckCircle className="h-4 w-4 mr-2 rtl:mr-0 rtl:ml-2" />
                     {t('products.successfullyLinked')}
                   </div>
@@ -614,7 +676,7 @@ const ProductList: React.FC = () => {
                       disabled={linking || !canManage}
                       className={cn(
                         "w-full py-4 font-bold rounded-2xl transition-all shadow-md disabled:opacity-50",
-                        !canManage ? "bg-gray-100 text-gray-400 cursor-not-allowed" : "bg-blue-600 text-white hover:bg-blue-700"
+                        !canManage ? "bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-600 cursor-not-allowed" : "bg-blue-600 text-white hover:bg-blue-700"
                       )}
                     >
                       {linking ? t('products.linking') : !canManage ? t('products.confirmLink') + " (" + t('products.adminAccessRequired') + ")" : t('products.confirmLink')}
@@ -626,7 +688,7 @@ const ProductList: React.FC = () => {
                       setLinkError(null);
                     }}
                     disabled={linking}
-                    className="w-full py-4 bg-white border-2 border-gray-200 text-gray-700 font-bold rounded-2xl hover:bg-gray-50 transition-all disabled:opacity-50"
+                    className="w-full py-4 bg-white dark:bg-gray-800 border-2 border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 font-bold rounded-2xl hover:bg-gray-50 dark:hover:bg-gray-700 transition-all disabled:opacity-50"
                   >
                     {linkSuccess ? t('common.close') || 'Close' : t('common.cancel') || 'Cancel'}
                   </button>
@@ -645,22 +707,22 @@ const ProductList: React.FC = () => {
               initial={{ opacity: 0, scale: 0.9, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.9, y: 20 }}
-              className="bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden"
+              className="bg-white dark:bg-gray-900 rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden border border-gray-100 dark:border-gray-800"
             >
               <div className="p-8 space-y-6">
                 <div className="text-center">
-                  <div className="bg-blue-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
-                    <Tag className="h-8 w-8 text-blue-600" />
+                  <div className="bg-blue-100 dark:bg-blue-900/30 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <Tag className="h-8 w-8 text-blue-600 dark:text-blue-400" />
                   </div>
-                  <h3 className="text-xl font-bold text-gray-900">{t('products.changeCategory')}</h3>
-                  <p className="text-gray-500 text-sm mt-2">
+                  <h3 className="text-xl font-bold text-gray-900 dark:text-white">{t('products.changeCategory')}</h3>
+                  <p className="text-gray-500 dark:text-gray-400 text-sm mt-2">
                     {t('products.selected')} {selectedProductIds.length} {t('products.title').toLowerCase()}.
                   </p>
                 </div>
 
                 <div className="space-y-4">
                   <div>
-                    <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">
+                    <label className="block text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-2">
                       {t('products.newCategory')}
                     </label>
                     <input
@@ -669,7 +731,7 @@ const ProductList: React.FC = () => {
                       value={bulkCategory}
                       onChange={(e) => setBulkCategory(e.target.value)}
                       placeholder={t('products.newCategory')}
-                      className="w-full px-4 py-3 border border-gray-200 rounded-2xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all rtl:text-right"
+                      className="w-full px-4 py-3 border border-gray-200 dark:border-gray-700 rounded-2xl bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all rtl:text-right"
                     />
                     <datalist id="bulk-categories">
                       {categories.filter(c => c !== 'All').map(cat => (
@@ -693,7 +755,7 @@ const ProductList: React.FC = () => {
                       setBulkCategory('');
                     }}
                     disabled={isBulkOperating}
-                    className="w-full py-4 bg-white border-2 border-gray-200 text-gray-700 font-bold rounded-2xl hover:bg-gray-50 transition-all disabled:opacity-50"
+                    className="w-full py-4 bg-white dark:bg-gray-800 border-2 border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 font-bold rounded-2xl hover:bg-gray-50 dark:hover:bg-gray-700 transition-all disabled:opacity-50"
                   >
                     {t('common.cancel') || 'Cancel'}
                   </button>
@@ -712,14 +774,14 @@ const ProductList: React.FC = () => {
               initial={{ opacity: 0, scale: 0.9, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.9, y: 20 }}
-              className="bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden"
+              className="bg-white dark:bg-gray-900 rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden border border-gray-100 dark:border-gray-800"
             >
               <div className="p-8 text-center">
-                <div className="bg-red-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
-                  <Trash2 className="h-8 w-8 text-red-600" />
+                <div className="bg-red-100 dark:bg-red-900/30 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
+                  <Trash2 className="h-8 w-8 text-red-600 dark:text-red-400" />
                 </div>
-                <h3 className="text-xl font-bold text-gray-900 mb-2">{t('products.confirmDelete')}</h3>
-                <p className="text-gray-500 text-sm mb-6">
+                <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-2">{t('products.confirmDelete')}</h3>
+                <p className="text-gray-500 dark:text-gray-400 text-sm mb-6">
                   {t('products.deleteConfirm')}
                 </p>
                 <div className="space-y-3">
@@ -733,7 +795,7 @@ const ProductList: React.FC = () => {
                   <button
                     onClick={() => setShowDeleteConfirm(null)}
                     disabled={isBulkOperating}
-                    className="w-full py-4 bg-white border-2 border-gray-200 text-gray-700 font-bold rounded-2xl hover:bg-gray-50 transition-all disabled:opacity-50"
+                    className="w-full py-4 bg-white dark:bg-gray-800 border-2 border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 font-bold rounded-2xl hover:bg-gray-50 dark:hover:bg-gray-700 transition-all disabled:opacity-50"
                   >
                     {t('common.cancel')}
                   </button>
@@ -752,14 +814,14 @@ const ProductList: React.FC = () => {
               initial={{ opacity: 0, scale: 0.9, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.9, y: 20 }}
-              className="bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden"
+              className="bg-white dark:bg-gray-900 rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden border border-gray-100 dark:border-gray-800"
             >
               <div className="p-8 text-center">
-                <div className="bg-red-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
-                  <Trash2 className="h-8 w-8 text-red-600" />
+                <div className="bg-red-100 dark:bg-red-900/30 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
+                  <Trash2 className="h-8 w-8 text-red-600 dark:text-red-400" />
                 </div>
-                <h3 className="text-xl font-bold text-gray-900 mb-2">{t('products.confirmDelete')}</h3>
-                <p className="text-gray-500 text-sm mb-6">
+                <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-2">{t('products.confirmDelete')}</h3>
+                <p className="text-gray-500 dark:text-gray-400 text-sm mb-6">
                   {t('products.bulkDeleteConfirm', { count: selectedProductIds.length })}
                 </p>
                 <div className="space-y-3">
@@ -773,7 +835,7 @@ const ProductList: React.FC = () => {
                   <button
                     onClick={() => setShowBulkDeleteConfirm(false)}
                     disabled={isBulkOperating}
-                    className="w-full py-4 bg-white border-2 border-gray-200 text-gray-700 font-bold rounded-2xl hover:bg-gray-50 transition-all disabled:opacity-50"
+                    className="w-full py-4 bg-white dark:bg-gray-800 border-2 border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 font-bold rounded-2xl hover:bg-gray-50 dark:hover:bg-gray-700 transition-all disabled:opacity-50"
                   >
                     {t('common.cancel')}
                   </button>

@@ -1,19 +1,22 @@
 import { Timestamp } from 'firebase/firestore';
 
-export type UserRole = 'admin' | 'staff';
+export type UserRole = 'admin' | 'staff' | 'user';
 export type Priority = 'low' | 'medium' | 'high';
+export type TaskStatus = 'pending' | 'in-progress' | 'completed';
 
 export interface UserProfile {
   uid: string;
   email: string;
   role: UserRole;
   name: string;
+  photoUrl?: string;
   active?: boolean;
-  phone?: string;
+  teamIds?: string[];
+  phoneNumber?: string;
   notificationPreferences?: {
-    expiry: { sms: boolean; email: boolean; push: boolean };
-    lowStock: { sms: boolean; email: boolean; push: boolean };
-    task: { sms: boolean; email: boolean; push: boolean };
+    expiry: { push: boolean; email: boolean; sms: boolean };
+    lowStock: { push: boolean; email: boolean; sms: boolean };
+    task: { push: boolean; email: boolean; sms: boolean };
   };
 }
 
@@ -37,11 +40,31 @@ export interface Task {
   title: string;
   description?: string;
   priority: Priority;
+  status: TaskStatus;
   completed: boolean;
   createdAt: Timestamp;
   dueDate?: Timestamp;
   createdBy: string;
   assignedTo?: string;
+  assignedTeamId?: string;
+  completionImage?: string;
+}
+
+export interface Team {
+  id: string;
+  name: string;
+  description?: string;
+  createdAt: Timestamp;
+  memberUids: string[];
+}
+
+export interface ChatMessage {
+  id: string;
+  text: string;
+  senderId: string;
+  senderName: string;
+  senderPhotoUrl?: string;
+  createdAt: Timestamp;
 }
 
 export interface Purchase {
@@ -58,32 +81,37 @@ export interface Purchase {
 
 export interface SystemSettings {
   id: string;
-  notificationPhone: string;
-  phoneNumber: string;
-  notificationEmail?: string;
   enableExpiryNotifications: boolean;
   enableLowStockNotifications?: boolean;
   enableTaskNotifications?: boolean;
   
   // Granular preferences
-  expirySms?: boolean;
-  expiryEmail?: boolean;
   expiryPush?: boolean;
+  expiryEmail?: boolean;
+  expirySms?: boolean;
   
-  lowStockSms?: boolean;
-  lowStockEmail?: boolean;
   lowStockPush?: boolean;
+  lowStockEmail?: boolean;
+  lowStockSms?: boolean;
   
-  taskSms?: boolean;
-  taskEmail?: boolean;
   taskPush?: boolean;
+  taskEmail?: boolean;
+  taskSms?: boolean;
 
-  enableSmsNotifications?: boolean; // Legacy/Global
-  enableNativeSmsNotifications?: boolean;
-  enableEmailNotifications?: boolean; // Legacy/Global
-  enablePushNotifications?: boolean; // Legacy/Global
-  lastNotificationCheck?: Timestamp;
+  enablePushNotifications?: boolean;
+  enableEmailNotifications?: boolean;
+  enableSmsNotifications?: boolean;
+
+  // Gmail settings
+  gmailUser?: string;
   gmailPass?: string;
+  
+  // Twilio settings
+  twilioSid?: string;
+  twilioAuthToken?: string;
+  twilioFromNumber?: string;
+
+  lastNotificationCheck?: Timestamp;
 }
 
 export interface FirestoreErrorInfo {

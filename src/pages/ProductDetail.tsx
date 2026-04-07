@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { formatCurrency, formatDate, cn } from '../lib/utils';
+import { CachedImage } from '../components/CachedImage';
 import { differenceInDays, format } from 'date-fns';
 import Scanner from '../components/Scanner';
 import { 
@@ -31,6 +32,7 @@ const ProductDetail: React.FC = () => {
   const location = useLocation();
   const { isAdmin, isStaff, profile } = useAuth();
   const canManage = isAdmin || isStaff;
+  const canDelete = isAdmin;
   
   // Helper to safely convert Firestore timestamp to Date
   const safeToDate = (timestamp: any) => {
@@ -51,6 +53,11 @@ const ProductDetail: React.FC = () => {
   const [linking, setLinking] = useState(false);
   const [activeTab, setActiveTab] = useState<'overview' | 'history'>('overview');
   const [barcodeSearch, setBarcodeSearch] = useState('');
+
+  // History Filters
+  const [historySearchPrice, setHistorySearchPrice] = useState('');
+  const [historyStartDate, setHistoryStartDate] = useState('');
+  const [historyEndDate, setHistoryEndDate] = useState('');
 
   // Parse query params
   const queryParams = new URLSearchParams(location.search);
@@ -81,7 +88,7 @@ const ProductDetail: React.FC = () => {
   
   // Adjustment Form State
   const [adjustmentQty, setAdjustmentQty] = useState('');
-  const [adjustmentType, setAdjustmentType] = useState<'in' | 'out'>('in');
+  const [adjustmentType, setAdjustmentType] = useState<'in' | 'out' | 'set'>('in');
   const [adjustmentExpiry, setAdjustmentExpiry] = useState('');
   const [adjustmentNote, setAdjustmentNote] = useState('');
   
@@ -221,8 +228,21 @@ const ProductDetail: React.FC = () => {
     setSubmitting(true);
     try {
       const baseQty = parseInt(adjustmentQty);
-      const qty = adjustmentType === 'in' ? baseQty : -baseQty;
-      const newStock = product.currentStock + qty;
+      if (isNaN(baseQty)) return;
+
+      let qty = 0;
+      let newStock = 0;
+
+      if (adjustmentType === 'in') {
+        qty = baseQty;
+        newStock = product.currentStock + qty;
+      } else if (adjustmentType === 'out') {
+        qty = -baseQty;
+        newStock = product.currentStock + qty;
+      } else if (adjustmentType === 'set') {
+        newStock = baseQty;
+        qty = newStock - product.currentStock;
+      }
 
       if (newStock < 0) {
         toast.error(t('productDetail.negativeStockError'));
@@ -265,7 +285,8 @@ const ProductDetail: React.FC = () => {
         recordedBy: profile.uid,
         type: 'adjustment',
         note: adjustmentNote,
-        expiryDate: expiryTimestamp
+        expiryDate: expiryTimestamp,
+        adjustmentType: adjustmentType
       });
 
       // 2. Add transaction record
@@ -273,12 +294,12 @@ const ProductDetail: React.FC = () => {
       batch.set(transactionRef, {
         productId: id,
         productName: product.name,
-        type: qty > 0 ? 'in' : 'out',
+        type: qty >= 0 ? 'in' : 'out',
         quantity: Math.abs(qty),
         previousStock: product.currentStock,
         newStock: newStock,
         timestamp: serverTimestamp(),
-        note: `${t('productDetail.manualAdjustment')}: ${adjustmentNote}`,
+        note: `${t('productDetail.manualAdjustment')} (${t(`productDetail.${adjustmentType}`)}): ${adjustmentNote}`,
         expiryDate: expiryTimestamp
       });
 
@@ -287,19 +308,19 @@ const ProductDetail: React.FC = () => {
       const updateData: any = {
         currentStock: newStock
       };
-      if (expiryTimestamp && adjustmentType === 'in') {
+      if (expiryTimestamp && (adjustmentType === 'in' || adjustmentType === 'set')) {
         updateData.expiryDate = expiryTimestamp;
       }
       batch.update(productRef, updateData);
 
       await batch.commit();
 
-      // Check for low stock alert (outside batch as it's a side effect)
+      // Check for low stock alert
       if (qty < 0 && newStock <= (product.lowStockThreshold || 0)) {
         sendLowStockAlert({ ...product, currentStock: newStock });
       }
 
-      toast.success(t('productDetail.stockAdjusted', { count: qty }));
+      toast.success(t('productDetail.stockAdjusted', { count: Math.abs(qty) }));
       setShowAdjustmentModal(false);
       setAdjustmentQty('');
       setAdjustmentNote('');
@@ -482,6 +503,35 @@ const ProductDetail: React.FC = () => {
   // Calculate stock trend for chart
   const validPurchases = purchases.filter(p => p.createdAt && typeof p.createdAt.toDate === 'function');
   
+  // Filtered purchases for the table
+  const filteredPurchases = purchases.filter(purchase => {
+    // Price filter
+    if (historySearchPrice) {
+      const price = purchase.price || 0;
+      if (!price.toString().includes(historySearchPrice)) return false;
+    }
+
+    // Date range filter
+    if (historyStartDate || historyEndDate) {
+      const purchaseDate = safeToDate(purchase.createdAt);
+      purchaseDate.setHours(0, 0, 0, 0);
+
+      if (historyStartDate) {
+        const start = new Date(historyStartDate);
+        start.setHours(0, 0, 0, 0);
+        if (purchaseDate < start) return false;
+      }
+
+      if (historyEndDate) {
+        const end = new Date(historyEndDate);
+        end.setHours(23, 59, 59, 999);
+        if (purchaseDate > end) return false;
+      }
+    }
+
+    return true;
+  });
+
   const sortedPurchases = [...validPurchases].sort((a, b) => 
     safeToDate(a.createdAt).getTime() - safeToDate(b.createdAt).getTime()
   );
@@ -533,50 +583,50 @@ const ProductDetail: React.FC = () => {
       <div className="flex flex-col space-y-6">
         <div className="flex flex-col md:flex-row md:items-start justify-between gap-6">
           <div className={cn("flex items-start flex-grow", isRTL ? "space-x-reverse space-x-4" : "space-x-4")}>
-            <button onClick={() => navigate(-1)} className="p-2 hover:bg-gray-100 rounded-full transition-colors mt-1">
-              <ArrowLeft className={cn("h-6 w-6 text-gray-600", isRTL && "rotate-180")} />
+            <button onClick={() => navigate(-1)} className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-full transition-colors mt-1">
+              <ArrowLeft className={cn("h-6 w-6 text-gray-600 dark:text-gray-400", isRTL && "rotate-180")} />
             </button>
             
             {product.imageUrl && (
-              <div className="hidden sm:block w-24 h-24 rounded-2xl overflow-hidden border border-gray-100 shadow-sm flex-shrink-0">
-                <img 
+              <div className="hidden sm:block w-24 h-24 rounded-2xl overflow-hidden border border-gray-100 dark:border-gray-800 shadow-sm flex-shrink-0">
+                <CachedImage 
+                  cacheKey={product.id}
                   src={product.imageUrl} 
                   alt={product.name} 
                   className="w-full h-full object-cover"
-                  referrerPolicy="no-referrer"
                 />
               </div>
             )}
 
             <div className="flex-grow">
-              <h1 className="text-2xl md:text-3xl font-bold text-gray-900 tracking-tight break-words">{product.name}</h1>
+              <h1 className="text-2xl md:text-3xl font-bold text-gray-900 dark:text-white tracking-tight break-words">{product.name}</h1>
               <div className="flex flex-wrap gap-2 mt-2 items-center">
                 {product.category && (
-                  <span className="text-[10px] md:text-xs font-bold bg-blue-50 text-blue-600 px-2 py-0.5 rounded-full border border-blue-100">
+                  <span className="text-[10px] md:text-xs font-bold bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded-full border border-blue-100 dark:border-blue-800">
                     {product.category}
                   </span>
                 )}
-                {product.category && <span className="text-gray-300">•</span>}
+                {product.category && <span className="text-gray-300 dark:text-gray-700">•</span>}
                 {(product.barcodes || [product.barcode]).slice(0, 2).map((bc, i) => (
-                  <span key={i} className="text-[10px] md:text-xs font-mono bg-gray-100 text-gray-600 px-2 py-0.5 rounded flex items-center">
-                    <Barcode className="h-3 w-3 mr-1" />
+                  <span key={i} className="text-[10px] md:text-xs font-mono bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 px-2 py-0.5 rounded flex items-center">
+                    <Barcode className="h-3 w-3 mr-1 rtl:mr-0 rtl:ml-1" />
                     {bc}
                   </span>
                 ))}
                 {(product.barcodes?.length || 0) > 1 && (
-                  <span className="text-[10px] text-gray-400 italic">+{product.barcodes!.length - 1} {t('common.more')}</span>
+                  <span className="text-[10px] text-gray-400 dark:text-gray-500 italic">+{product.barcodes!.length - 1} {t('common.more')}</span>
                 )}
               </div>
             </div>
           </div>
 
           {product.imageUrl && (
-            <div className="sm:hidden w-full h-48 rounded-2xl overflow-hidden border border-gray-100 shadow-sm">
-              <img 
+            <div className="sm:hidden w-full h-48 rounded-2xl overflow-hidden border border-gray-100 dark:border-gray-800 shadow-sm">
+              <CachedImage 
+                cacheKey={product.id}
                 src={product.imageUrl} 
                 alt={product.name} 
                 className="w-full h-full object-cover"
-                referrerPolicy="no-referrer"
               />
             </div>
           )}
@@ -584,19 +634,21 @@ const ProductDetail: React.FC = () => {
 
         {/* Action Buttons Grid */}
         <div className="grid grid-cols-2 sm:flex sm:items-center gap-3">
-          <button
-            onClick={() => setShowPurchaseModal(true)}
-            className="col-span-2 sm:flex-1 inline-flex items-center justify-center px-6 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition-all shadow-md font-bold text-sm"
-          >
-            <Plus className={cn("h-5 w-5", isRTL ? "ml-2" : "mr-2")} />
-            {t('productDetail.recordPurchase')}
-          </button>
+          {canManage && (
+            <button
+              onClick={() => setShowPurchaseModal(true)}
+              className="col-span-2 sm:flex-1 inline-flex items-center justify-center px-6 py-3 bg-blue-600 dark:bg-blue-500 text-white rounded-xl hover:bg-blue-700 dark:hover:bg-blue-600 transition-all shadow-md font-bold text-sm"
+            >
+              <Plus className={cn("h-5 w-5", isRTL ? "ml-2" : "mr-2")} />
+              {t('productDetail.recordPurchase')}
+            </button>
+          )}
           
           <div className={cn("flex col-span-2 sm:contents", isRTL ? "space-x-reverse space-x-2" : "space-x-2")}>
             {canManage && (
               <button
                 onClick={() => setShowAdjustmentModal(true)}
-                className="flex-1 sm:flex-none p-3 bg-white border border-gray-200 text-gray-600 rounded-xl hover:bg-gray-50 transition-colors shadow-sm flex items-center justify-center"
+                className="flex-1 sm:flex-none p-3 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 text-gray-600 dark:text-gray-400 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors shadow-sm flex items-center justify-center"
                 title={t('productDetail.manualAdjustment')}
               >
                 <ClipboardList className="h-5 w-5" />
@@ -606,7 +658,7 @@ const ProductDetail: React.FC = () => {
             {canManage && (
               <button
                 onClick={() => setShowScanner(true)}
-                className="flex-1 sm:flex-none p-3 bg-blue-50 text-blue-600 rounded-xl hover:bg-blue-100 transition-colors shadow-sm flex items-center justify-center"
+                className="flex-1 sm:flex-none p-3 bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 rounded-xl hover:bg-blue-100 dark:hover:bg-blue-900/50 transition-colors shadow-sm flex items-center justify-center"
                 title={t('productDetail.scanBarcode')}
               >
                 <ScanLine className="h-5 w-5" />
@@ -619,30 +671,32 @@ const ProductDetail: React.FC = () => {
             <div className={cn("flex col-span-2 sm:contents", isRTL ? "space-x-reverse space-x-2" : "space-x-2")}>
               <Link
                 to={`/products/edit/${product.id}`}
-                className="flex-1 sm:flex-none inline-flex items-center justify-center px-4 py-3 bg-white border border-gray-200 text-gray-600 rounded-xl hover:bg-gray-50 transition-colors shadow-sm font-bold text-sm"
+                className="flex-1 sm:flex-none inline-flex items-center justify-center px-4 py-3 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 text-gray-600 dark:text-gray-400 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors shadow-sm font-bold text-sm"
               >
                 <Edit2 className={cn("h-5 w-5", isRTL ? "ml-2" : "mr-2")} />
                 {t('common.edit')}
               </Link>
-              <button
-                onClick={handleDelete}
-                className="flex-1 sm:flex-none inline-flex items-center justify-center px-4 py-3 bg-white border border-gray-200 text-red-600 rounded-xl hover:bg-red-50 transition-colors shadow-sm font-bold text-sm"
-              >
-                <Trash2 className={cn("h-5 w-5", isRTL ? "ml-2" : "mr-2")} />
-                {t('common.delete')}
-              </button>
+              {canDelete && (
+                <button
+                  onClick={handleDelete}
+                  className="flex-1 sm:flex-none inline-flex items-center justify-center px-4 py-3 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 text-red-600 dark:text-red-400 rounded-xl hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors shadow-sm font-bold text-sm"
+                >
+                  <Trash2 className={cn("h-5 w-5", isRTL ? "ml-2" : "mr-2")} />
+                  {t('common.delete')}
+                </button>
+              )}
             </div>
           )}
         </div>
       </div>
 
       {/* Tabs */}
-      <div className="flex bg-gray-100 p-1 rounded-2xl w-full sm:w-fit">
+      <div className="flex bg-gray-100 dark:bg-gray-800 p-1 rounded-2xl w-full sm:w-fit">
         <button
           onClick={() => setActiveTab('overview')}
           className={cn(
             "flex-1 sm:flex-none px-4 sm:px-6 py-2.5 rounded-xl text-xs sm:text-sm font-bold transition-all",
-            activeTab === 'overview' ? "bg-white text-blue-600 shadow-sm" : "text-gray-500 hover:text-gray-700"
+            activeTab === 'overview' ? "bg-white dark:bg-gray-700 text-blue-600 dark:text-blue-400 shadow-sm" : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
           )}
         >
           {t('productDetail.overview')}
@@ -651,7 +705,7 @@ const ProductDetail: React.FC = () => {
           onClick={() => setActiveTab('history')}
           className={cn(
             "flex-1 sm:flex-none px-4 sm:px-6 py-2.5 rounded-xl text-xs sm:text-sm font-bold transition-all",
-            activeTab === 'history' ? "bg-white text-blue-600 shadow-sm" : "text-gray-500 hover:text-gray-700"
+            activeTab === 'history' ? "bg-white dark:bg-gray-700 text-blue-600 dark:text-blue-400 shadow-sm" : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
           )}
         >
           {t('productDetail.historyTrends')}
@@ -697,17 +751,31 @@ const ProductDetail: React.FC = () => {
                 </motion.div>
               )}
 
-              <div className="bg-white shadow-sm rounded-2xl border border-gray-100 p-6 sm:p-8 grid grid-cols-1 sm:grid-cols-2 gap-6 sm:gap-8">
-                <div className={cn("space-y-1 pb-6 sm:pb-0 border-b sm:border-b-0 border-gray-100", isRTL ? "sm:border-l sm:pl-8" : "sm:border-r sm:pr-8")}>
-                  <p className="text-[10px] sm:text-sm font-bold text-gray-400 uppercase tracking-widest">{t('productDetail.currentStock')}</p>
+              <div className="bg-white dark:bg-gray-900 shadow-sm rounded-2xl border border-gray-100 dark:border-gray-800 p-6 sm:p-8 grid grid-cols-1 sm:grid-cols-2 gap-6 sm:gap-8 transition-colors">
+                <div className={cn("space-y-1 pb-6 sm:pb-0 border-b sm:border-b-0 border-gray-100 dark:border-gray-800", isRTL ? "sm:border-l sm:pl-8" : "sm:border-r sm:pr-8")}>
+                  <p className="text-[10px] sm:text-sm font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest">{t('productDetail.currentStock')}</p>
                   <div className="flex items-baseline space-x-2 rtl:space-x-reverse">
-                    <span className={cn("text-4xl font-black", isLowStock ? "text-amber-600" : "text-gray-900")}>
+                    <span className={cn("text-4xl font-black", isLowStock ? "text-amber-600 dark:text-amber-400" : "text-gray-900 dark:text-white")}>
                       {product.currentStock}
                     </span>
-                    <span className="text-gray-400 text-sm font-medium uppercase">{t('products.units')}</span>
+                    <span className="text-gray-400 dark:text-gray-500 text-sm font-medium uppercase">{t('products.units')}</span>
+                    {canManage && (
+                      <button 
+                        onClick={() => {
+                          setAdjustmentType('set');
+                          setAdjustmentQty(product.currentStock.toString());
+                          setAdjustmentNote(t('productDetail.inventoryCorrection'));
+                          setShowAdjustmentModal(true);
+                        }}
+                        className="p-1.5 text-gray-400 dark:text-gray-500 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded-lg transition-all ml-2"
+                        title={t('productDetail.editStock')}
+                      >
+                        <Edit2 className="h-4 w-4" />
+                      </button>
+                    )}
                   </div>
                   {isLowStock && (
-                    <div className="flex items-center text-amber-600 text-[10px] font-bold mt-2 uppercase tracking-wider">
+                    <div className="flex items-center text-amber-600 dark:text-amber-400 text-[10px] font-bold mt-2 uppercase tracking-wider">
                       <AlertTriangle className={cn("h-3 w-3", isRTL ? "ml-1" : "mr-1")} />
                       {t('products.lowStock')}
                     </div>
@@ -715,46 +783,46 @@ const ProductDetail: React.FC = () => {
                 </div>
 
                 <div className="space-y-1 pt-6 sm:pt-0">
-                  <p className="text-[10px] sm:text-sm font-bold text-gray-400 uppercase tracking-widest">{t('productDetail.latestExpiry')}</p>
+                  <p className="text-[10px] sm:text-sm font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest">{t('productDetail.latestExpiry')}</p>
                   <div className="flex items-baseline space-x-2 rtl:space-x-reverse">
-                    <span className={cn("text-2xl sm:text-3xl font-black", isExpiring ? "text-red-600" : "text-gray-900")}>
+                    <span className={cn("text-2xl sm:text-3xl font-black", isExpiring ? "text-red-600 dark:text-red-400" : "text-gray-900 dark:text-white")}>
                       {product.expiryDate ? formatDate(safeToDate(product.expiryDate)) : t('productDetail.na')}
                     </span>
                   </div>
                   {isExpiring && (
-                    <div className="flex items-center text-red-600 text-[10px] font-bold mt-2 uppercase tracking-wider">
+                    <div className="flex items-center text-red-600 dark:text-red-400 text-[10px] font-bold mt-2 uppercase tracking-wider">
                       <Calendar className={cn("h-3 w-3", isRTL ? "ml-1" : "mr-1")} />
                       {t('productDetail.expiringIn', { count: daysRemaining })}
                     </div>
                   )}
                 </div>
 
-                <div className={cn("space-y-1 pt-6 border-t border-gray-100", isRTL ? "sm:border-l sm:pl-8" : "sm:border-r sm:pr-8")}>
-                  <p className="text-[10px] sm:text-sm font-bold text-gray-400 uppercase tracking-widest">{t('productDetail.lastPurchasePrice')}</p>
+                <div className={cn("space-y-1 pt-6 border-t border-gray-100 dark:border-gray-800", isRTL ? "sm:border-l sm:pl-8" : "sm:border-r sm:pr-8")}>
+                  <p className="text-[10px] sm:text-sm font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest">{t('productDetail.lastPurchasePrice')}</p>
                   <div className="flex items-baseline space-x-2 rtl:space-x-reverse">
-                    <span className="text-2xl sm:text-3xl font-black text-gray-900">
+                    <span className="text-2xl sm:text-3xl font-black text-gray-900 dark:text-white">
                       {product.lastPurchasePrice ? formatCurrency(product.lastPurchasePrice) : t('productDetail.na')}
                     </span>
-                    <span className="text-gray-400 text-xs font-medium uppercase">{t('productDetail.perUnit')}</span>
+                    <span className="text-gray-400 dark:text-gray-500 text-xs font-medium uppercase">{t('productDetail.perUnit')}</span>
                   </div>
                 </div>
 
-                <div className="space-y-1 pt-6 border-t border-gray-100">
-                  <p className="text-[10px] sm:text-sm font-bold text-gray-400 uppercase tracking-widest">{t('productDetail.quantityPerBox')}</p>
+                <div className="space-y-1 pt-6 border-t border-gray-100 dark:border-gray-800">
+                  <p className="text-[10px] sm:text-sm font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest">{t('productDetail.quantityPerBox')}</p>
                   <div className="flex items-baseline space-x-2 rtl:space-x-reverse">
-                    <span className="text-2xl sm:text-3xl font-black text-gray-900">
+                    <span className="text-2xl sm:text-3xl font-black text-gray-900 dark:text-white">
                       {product.quantityPerBox || t('productDetail.na')}
                     </span>
-                    <span className="text-gray-400 text-xs font-medium uppercase">{t('products.units')}</span>
+                    <span className="text-gray-400 dark:text-gray-500 text-xs font-medium uppercase">{t('products.units')}</span>
                   </div>
                 </div>
               </div>
 
               {/* Stock Trend Mini Chart */}
               {historicalStock.length > 1 && (
-                <div className="bg-white shadow-sm rounded-2xl border border-gray-100 p-6">
+                <div className="bg-white dark:bg-gray-900 shadow-sm rounded-2xl border border-gray-100 dark:border-gray-800 p-6 transition-colors">
                   <div className="flex items-center justify-between mb-6">
-                    <h3 className="text-sm font-bold text-gray-400 uppercase tracking-widest flex items-center">
+                    <h3 className="text-sm font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest flex items-center">
                       <TrendingUp className={cn("h-4 w-4", isRTL ? "ml-2" : "mr-2")} />
                       {t('productDetail.stockTrend')}
                     </h3>
@@ -784,9 +852,9 @@ const ProductDetail: React.FC = () => {
                           content={({ active, payload }) => {
                             if (active && payload && payload.length) {
                               return (
-                                <div className="bg-white p-3 border border-gray-100 shadow-xl rounded-xl">
-                                  <p className="text-[10px] font-bold text-gray-400 uppercase mb-1">{payload[0].payload.fullDate}</p>
-                                  <p className="text-sm font-bold text-blue-600">{t('productDetail.units', { count: payload[0].value })}</p>
+                                <div className="bg-white dark:bg-gray-800 p-3 border border-gray-100 dark:border-gray-700 shadow-xl rounded-xl">
+                                  <p className="text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase mb-1">{payload[0].payload.fullDate}</p>
+                                  <p className="text-sm font-bold text-blue-600 dark:text-blue-400">{t('productDetail.units', { count: payload[0].value })}</p>
                                 </div>
                               );
                             }
@@ -806,28 +874,26 @@ const ProductDetail: React.FC = () => {
                     </ResponsiveContainer>
                   </div>
                 </div>
-              )}
-
-              {/* Thresholds Card */}
-              <div className="bg-gray-50 rounded-2xl p-6 border border-gray-100">
-                <h3 className="text-sm font-bold text-gray-400 uppercase tracking-widest mb-4">{t('productDetail.alertThresholds')}</h3>
+              )}              {/* Thresholds Card */}
+              <div className="bg-gray-50 dark:bg-gray-800/50 rounded-2xl p-6 border border-gray-100 dark:border-gray-800 transition-colors">
+                <h3 className="text-sm font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-4">{t('productDetail.alertThresholds')}</h3>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
                   <div className="flex items-center space-x-4">
-                    <div className="bg-amber-100 p-2 rounded-lg">
-                      <AlertTriangle className="h-5 w-5 text-amber-600" />
+                    <div className="bg-amber-100 dark:bg-amber-900/30 p-2 rounded-lg">
+                      <AlertTriangle className="h-5 w-5 text-amber-600 dark:text-amber-400" />
                     </div>
                     <div>
-                      <p className="text-xs text-gray-500">{t('productDetail.lowStockThreshold')}</p>
-                      <p className="text-sm font-bold text-gray-900">{t('productDetail.units', { count: product.lowStockThreshold || 0 })}</p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">{t('productDetail.lowStockThreshold')}</p>
+                      <p className="text-sm font-bold text-gray-900 dark:text-white">{t('productDetail.units', { count: product.lowStockThreshold || 0 })}</p>
                     </div>
                   </div>
                   <div className="flex items-center space-x-4">
-                    <div className="bg-red-100 p-2 rounded-lg">
-                      <Calendar className="h-5 w-5 text-red-600" />
+                    <div className="bg-red-100 dark:bg-red-900/30 p-2 rounded-lg">
+                      <Calendar className="h-5 w-5 text-red-600 dark:text-red-400" />
                     </div>
                     <div>
-                      <p className="text-xs text-gray-500">{t('productDetail.expiryAlertThreshold')}</p>
-                      <p className="text-sm font-bold text-gray-900">{t('productDetail.daysBefore', { count: product.expiryAlertThreshold || 0 })}</p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">{t('productDetail.expiryAlertThreshold')}</p>
+                      <p className="text-sm font-bold text-gray-900 dark:text-white">{t('productDetail.daysBefore', { count: product.expiryAlertThreshold || 0 })}</p>
                     </div>
                   </div>
                 </div>
@@ -836,41 +902,41 @@ const ProductDetail: React.FC = () => {
 
             {/* Sidebar: Recent Activity */}
             <div className="space-y-6">
-              <div className="bg-white shadow-sm rounded-2xl border border-gray-100 overflow-hidden">
-                <div className="px-6 py-5 border-b border-gray-100 flex justify-between items-center">
-                  <h3 className="text-lg font-bold text-gray-900 flex items-center">
-                    <History className="h-5 w-5 mr-2 text-gray-400" />
+              <div className="bg-white dark:bg-gray-900 shadow-sm rounded-2xl border border-gray-100 dark:border-gray-800 overflow-hidden transition-colors">
+                <div className="px-6 py-5 border-b border-gray-100 dark:border-gray-800 flex justify-between items-center">
+                  <h3 className="text-lg font-bold text-gray-900 dark:text-white flex items-center">
+                    <History className="h-5 w-5 mr-2 text-gray-400 dark:text-gray-500" />
                     {t('productDetail.recentActivity')}
                   </h3>
                   <button 
                     onClick={() => setActiveTab('history')}
-                    className="text-xs font-bold text-blue-600 hover:text-blue-700 uppercase tracking-wider"
+                    className="text-xs font-bold text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 uppercase tracking-wider"
                   >
                     {t('productDetail.viewAll')}
                   </button>
                 </div>
-                <div className="divide-y divide-gray-100">
+                <div className="divide-y divide-gray-100 dark:divide-gray-800">
                   {purchases.slice(0, 5).map((purchase) => (
                     <div key={purchase.id} className="px-6 py-4">
                       <div className="flex justify-between items-start">
                         <div className="flex items-start space-x-3">
                           <div className={cn(
                             "p-2 rounded-lg mt-0.5",
-                            purchase.type === 'adjustment' ? "bg-gray-100 text-gray-600" : "bg-blue-50 text-blue-600"
+                            purchase.type === 'adjustment' ? "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400" : "bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400"
                           )}>
                             {purchase.type === 'adjustment' ? <ClipboardList className="h-4 w-4" /> : <ShoppingCart className="h-4 w-4" />}
                           </div>
                           <div>
-                            <p className="text-sm font-bold text-gray-900">
+                            <p className="text-sm font-bold text-gray-900 dark:text-white">
                               {purchase.quantity > 0 ? '+' : ''}{t('productDetail.units', { count: purchase.quantity })}
                             </p>
-                            <div className="flex items-center text-[10px] text-gray-400 space-x-2">
+                            <div className="flex items-center text-[10px] text-gray-400 dark:text-gray-500 space-x-2">
                               <span>{formatDate(safeToDate(purchase.createdAt))}</span>
                               <span>•</span>
                               <span>{users[purchase.recordedBy]?.name || t('common.unknown')}</span>
                             </div>
                             {purchase.note && (
-                              <p className="text-[10px] text-gray-500 italic mt-1 line-clamp-1">
+                              <p className="text-[10px] text-gray-500 dark:text-gray-400 italic mt-1 line-clamp-1">
                                 {purchase.note}
                               </p>
                             )}
@@ -883,10 +949,10 @@ const ProductDetail: React.FC = () => {
               </div>
 
               {/* Product Barcodes Card */}
-              <div className="bg-white shadow-sm rounded-2xl border border-gray-100 overflow-hidden">
-                <div className="px-6 py-5 border-b border-gray-100">
-                  <h3 className="text-lg font-bold text-gray-900 flex items-center">
-                    <Barcode className="h-5 w-5 mr-2 text-gray-400" />
+              <div className="bg-white dark:bg-gray-900 shadow-sm rounded-2xl border border-gray-100 dark:border-gray-800 overflow-hidden transition-colors">
+                <div className="px-6 py-5 border-b border-gray-100 dark:border-gray-800">
+                  <h3 className="text-lg font-bold text-gray-900 dark:text-white flex items-center">
+                    <Barcode className="h-5 w-5 mr-2 text-gray-400 dark:text-gray-500" />
                     {t('productDetail.productBarcodes')}
                   </h3>
                 </div>
@@ -894,21 +960,21 @@ const ProductDetail: React.FC = () => {
                   <div className="flex space-x-2">
                     <div className="relative flex-grow">
                       <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                        <Search className="h-4 w-4 text-gray-400" />
+                        <Search className="h-4 w-4 text-gray-400 dark:text-gray-500" />
                       </div>
                       <input
                         type="text"
                         placeholder={t('productDetail.barcodeSearchPlaceholder')}
                         value={barcodeSearch}
                         onChange={(e) => setBarcodeSearch(e.target.value)}
-                        className="block w-full pl-9 pr-3 py-2 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                        className="block w-full pl-9 pr-3 py-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                       />
                     </div>
                     {canManage && barcodeSearch.trim() && (
                       <button
                         onClick={handleAddManualBarcode}
                         disabled={linking}
-                        className="p-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition-colors disabled:opacity-50"
+                        className="p-2 bg-blue-600 dark:bg-blue-500 text-white rounded-xl hover:bg-blue-700 dark:hover:bg-blue-600 transition-colors disabled:opacity-50"
                         title={t('productDetail.addBarcode')}
                       >
                         <Plus className="h-5 w-5" />
@@ -921,7 +987,7 @@ const ProductDetail: React.FC = () => {
                       const filtered = allBarcodes.filter(bc => bc.toLowerCase().includes(barcodeSearch.toLowerCase()));
                       
                       if (filtered.length === 0) {
-                        return <p className="text-xs text-gray-400 italic">{t('productDetail.noBarcodesFound')}</p>;
+                        return <p className="text-xs text-gray-400 dark:text-gray-500 italic">{t('productDetail.noBarcodesFound')}</p>;
                       }
 
                       return filtered.map((bc, i) => (
@@ -929,13 +995,13 @@ const ProductDetail: React.FC = () => {
                           <span className={cn(
                             "text-xs font-mono px-2 py-1 rounded-lg border flex items-center transition-all",
                             bc === product.barcode 
-                              ? "bg-blue-50 text-blue-700 border-blue-200" 
-                              : "bg-gray-50 text-gray-600 border-gray-100"
+                              ? "bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 border-blue-200 dark:border-blue-800" 
+                              : "bg-gray-50 dark:bg-gray-800 text-gray-600 dark:text-gray-400 border-gray-100 dark:border-gray-700"
                           )}>
                             <Barcode className="h-3 w-3 mr-1 opacity-50" />
                             {bc}
                             {bc === product.barcode && (
-                              <span className="ml-1.5 text-[8px] uppercase bg-blue-100 text-blue-600 px-1 rounded">{t('productDetail.primary')}</span>
+                              <span className="ml-1.5 text-[8px] uppercase bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-300 px-1 rounded">{t('productDetail.primary')}</span>
                             )}
                           </span>
                           
@@ -944,7 +1010,7 @@ const ProductDetail: React.FC = () => {
                               {bc !== product.barcode && (
                                 <button
                                   onClick={() => handleSetPrimaryBarcode(bc)}
-                                  className="p-1 bg-white border border-gray-200 rounded-full text-blue-600 shadow-sm hover:bg-blue-50"
+                                  className="p-1 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-full text-blue-600 dark:text-blue-400 shadow-sm hover:bg-blue-50 dark:hover:bg-gray-600"
                                   title={t('productDetail.setPrimary')}
                                 >
                                   <CheckCircle className="h-3 w-3" />
@@ -952,7 +1018,7 @@ const ProductDetail: React.FC = () => {
                               )}
                               <button
                                 onClick={() => handleRemoveBarcode(bc)}
-                                className="p-1 bg-white border border-gray-200 rounded-full text-red-600 shadow-sm hover:bg-red-50"
+                                className="p-1 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-full text-red-600 dark:text-red-400 shadow-sm hover:bg-red-50 dark:hover:bg-gray-600"
                                 title={t('productDetail.removeBarcode')}
                               >
                                 <X className="h-3 w-3" />
@@ -974,25 +1040,78 @@ const ProductDetail: React.FC = () => {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -10 }}
             className="space-y-6"
-            id="purchase-history"
-          >
-            <div className={cn(
-              "bg-white shadow-sm rounded-2xl border transition-all overflow-hidden",
-              highlightHistory ? "border-blue-400 ring-2 ring-blue-100" : "border-gray-100"
-            )}>
-              <div className="px-6 py-5 border-b border-gray-100 flex justify-between items-center">
-                <h3 className="text-lg font-bold text-gray-900 flex items-center">
-                  <TrendingUp className="h-5 w-5 mr-2 text-blue-500" />
-                  {t('productDetail.stockLevelHistory')}
-                </h3>
-              </div>
-              
-              {historicalStock.length > 1 && (
-                <div className="p-6 border-b border-gray-100">
+    id="purchase-history"
+  >
+    <div className={cn(
+      "bg-white dark:bg-gray-900 shadow-sm rounded-2xl border transition-all overflow-hidden",
+      highlightHistory ? "border-blue-400 ring-2 ring-blue-100 dark:ring-blue-900/30" : "border-gray-100 dark:border-gray-800"
+    )}>
+      <div className="px-6 py-5 border-b border-gray-100 dark:border-gray-800 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <h3 className="text-lg font-bold text-gray-900 dark:text-white flex items-center">
+          <TrendingUp className="h-5 w-5 mr-2 text-blue-500" />
+          {t('productDetail.stockLevelHistory')}
+        </h3>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative">
+            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+              <Search className="h-4 w-4 text-gray-400" />
+            </div>
+            <input
+              type="number"
+              step="0.01"
+              placeholder={t('productDetail.searchByPrice')}
+              value={historySearchPrice}
+              onChange={(e) => setHistorySearchPrice(e.target.value)}
+              className="pl-9 pr-3 py-2 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl text-xs focus:ring-2 focus:ring-blue-500 w-full sm:w-40"
+            />
+          </div>
+
+          <div className="flex items-center gap-2 bg-gray-50 dark:bg-gray-800 p-1 rounded-xl border border-gray-200 dark:border-gray-700">
+            <div className="flex items-center px-2">
+              <Calendar className="h-3 w-3 text-gray-400 mr-2" />
+              <input
+                type="date"
+                value={historyStartDate}
+                onChange={(e) => setHistoryStartDate(e.target.value)}
+                className="bg-transparent border-none p-0 text-[10px] focus:ring-0 text-gray-600 dark:text-gray-400"
+                title={t('productDetail.startDate')}
+              />
+            </div>
+            <span className="text-gray-300">|</span>
+            <div className="flex items-center px-2">
+              <input
+                type="date"
+                value={historyEndDate}
+                onChange={(e) => setHistoryEndDate(e.target.value)}
+                className="bg-transparent border-none p-0 text-[10px] focus:ring-0 text-gray-600 dark:text-gray-400"
+                title={t('productDetail.endDate')}
+              />
+            </div>
+          </div>
+
+          {(historySearchPrice || historyStartDate || historyEndDate) && (
+            <button
+              onClick={() => {
+                setHistorySearchPrice('');
+                setHistoryStartDate('');
+                setHistoryEndDate('');
+              }}
+              className="p-2 text-gray-400 hover:text-red-500 transition-colors"
+              title={t('productDetail.clearFilters')}
+            >
+              <X className="h-4 w-4" />
+            </button>
+          )}
+        </div>
+      </div>
+      
+      {historicalStock.length > 1 && (
+                <div className="p-6 border-b border-gray-100 dark:border-gray-800">
                   <div className="h-64 w-full">
                     <ResponsiveContainer width="100%" height="100%">
                       <LineChart data={historicalStock}>
-                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f3f4f6" />
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f3f4f6" className="dark:stroke-gray-800" />
                         <XAxis 
                           dataKey="date" 
                           axisLine={false} 
@@ -1011,14 +1130,14 @@ const ProductDetail: React.FC = () => {
                             if (active && payload && payload.length) {
                               const data = payload[0].payload;
                               return (
-                                <div className="bg-white p-4 border border-gray-100 shadow-2xl rounded-2xl">
-                                  <p className="text-xs font-bold text-gray-400 uppercase mb-2">{data.fullDate}</p>
+                                <div className="bg-white dark:bg-gray-800 p-4 border border-gray-100 dark:border-gray-700 shadow-2xl rounded-2xl">
+                                  <p className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase mb-2">{data.fullDate}</p>
                                   <div className="space-y-1">
-                                    <p className="text-sm font-bold text-gray-900">{t('productDetail.stockUnits', { count: data.stock })}</p>
+                                    <p className="text-sm font-bold text-gray-900 dark:text-white">{t('productDetail.stockUnits', { count: data.stock })}</p>
                                     {data.change !== 0 && (
                                       <p className={cn(
                                         "text-xs font-medium",
-                                        data.change > 0 ? "text-green-600" : "text-red-600"
+                                        data.change > 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"
                                       )}>
                                         {data.change > 0 ? '+' : ''}{t('productDetail.units', { count: data.change })} ({t(`productDetail.${data.type}`)})
                                       </p>
@@ -1046,32 +1165,32 @@ const ProductDetail: React.FC = () => {
               )}
 
               <div className="hidden sm:block overflow-x-auto">
-                <table className="min-w-full divide-y divide-gray-200">
-                  <thead className="bg-gray-50">
+                <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-800">
+                  <thead className="bg-gray-50 dark:bg-gray-800/50">
                     <tr>
-                      <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">{t('productDetail.dateTime')}</th>
-                      <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">{t('productDetail.type')}</th>
-                      <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">{t('productDetail.quantity')}</th>
-                      <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">{t('productDetail.price')}</th>
-                      <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">{t('productDetail.expiry')}</th>
-                      <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">{t('productDetail.user')}</th>
-                      <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">{t('productDetail.notes')}</th>
+                      <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">{t('productDetail.dateTime')}</th>
+                      <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">{t('productDetail.type')}</th>
+                      <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">{t('productDetail.quantity')}</th>
+                      <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">{t('productDetail.price')}</th>
+                      <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">{t('productDetail.expiry')}</th>
+                      <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">{t('productDetail.user')}</th>
+                      <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">{t('productDetail.notes')}</th>
                     </tr>
                   </thead>
-                  <tbody className="bg-white divide-y divide-gray-100">
-                    {purchases.length > 0 ? (
-                      purchases.map((purchase) => (
-                        <tr key={purchase.id} className="hover:bg-gray-50 transition-colors">
+                  <tbody className="bg-white dark:bg-gray-900 divide-y divide-gray-100 dark:divide-gray-800">
+                    {filteredPurchases.length > 0 ? (
+                      filteredPurchases.map((purchase) => (
+                        <tr key={purchase.id} className="hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
                           <td className="px-6 py-4 whitespace-nowrap">
-                            <div className="flex items-center text-sm text-gray-900">
-                              <Clock className="h-4 w-4 mr-2 text-gray-400" />
+                            <div className="flex items-center text-sm text-gray-900 dark:text-white">
+                              <Clock className="h-4 w-4 mr-2 text-gray-400 dark:text-gray-500" />
                               {formatDate(safeToDate(purchase.createdAt))}
                             </div>
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap">
                             <span className={cn(
                               "inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider",
-                              purchase.type === 'adjustment' ? "bg-gray-100 text-gray-600" : "bg-blue-100 text-blue-600"
+                              purchase.type === 'adjustment' ? "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400" : "bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400"
                             )}>
                               {t(`productDetail.${purchase.type}`)}
                             </span>
@@ -1079,29 +1198,29 @@ const ProductDetail: React.FC = () => {
                           <td className="px-6 py-4 whitespace-nowrap">
                             <span className={cn(
                               "text-sm font-bold",
-                              purchase.quantity > 0 ? "text-green-600" : "text-red-600"
+                              purchase.quantity > 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"
                             )}>
                               {purchase.quantity > 0 ? '+' : ''}{t('productDetail.units', { count: purchase.quantity })}
                             </span>
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap">
-                            <span className="text-sm text-gray-900">
+                            <span className="text-sm text-gray-900 dark:text-white">
                               {purchase.type === 'purchase' ? formatCurrency(purchase.price || 0) : '-'}
                             </span>
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap">
-                            <span className="text-sm text-gray-900">
+                            <span className="text-sm text-gray-900 dark:text-white">
                               {purchase.type === 'purchase' && purchase.expiryDate ? formatDate(safeToDate(purchase.expiryDate)) : '-'}
                             </span>
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap">
-                            <div className="flex items-center text-sm text-gray-900">
-                              <UserIcon className="h-4 w-4 mr-2 text-gray-400" />
+                            <div className="flex items-center text-sm text-gray-900 dark:text-white">
+                              <UserIcon className="h-4 w-4 mr-2 text-gray-400 dark:text-gray-500" />
                               {users[purchase.recordedBy]?.name || t('common.unknownUser')}
                             </div>
                           </td>
                           <td className="px-6 py-4">
-                            <div className="text-xs text-gray-500 italic">
+                            <div className="text-xs text-gray-500 dark:text-gray-400 italic">
                               {purchase.note || (purchase.type === 'adjustment' ? t('productDetail.noReasonProvided') : '')}
                             </div>
                           </td>
@@ -1110,8 +1229,8 @@ const ProductDetail: React.FC = () => {
                     ) : (
                       <tr>
                         <td colSpan={7} className="px-6 py-20 text-center">
-                          <History className="h-12 w-12 text-gray-200 mx-auto mb-4" />
-                          <p className="text-gray-400 italic">{t('productDetail.noHistory')}</p>
+                          <History className="h-12 w-12 text-gray-200 dark:text-gray-800 mx-auto mb-4" />
+                          <p className="text-gray-400 dark:text-gray-500 italic">{t('productDetail.noHistory')}</p>
                         </td>
                       </tr>
                     )}
@@ -1120,18 +1239,18 @@ const ProductDetail: React.FC = () => {
               </div>
 
               {/* Mobile Card View for History */}
-              <div className="sm:hidden divide-y divide-gray-100">
-                {purchases.length > 0 ? (
-                  purchases.map((purchase) => (
+              <div className="sm:hidden divide-y divide-gray-100 dark:divide-gray-800">
+                {filteredPurchases.length > 0 ? (
+                  filteredPurchases.map((purchase) => (
                     <div key={purchase.id} className="p-4 space-y-3">
                       <div className="flex justify-between items-start">
-                        <div className="flex items-center text-xs text-gray-500">
+                        <div className="flex items-center text-xs text-gray-500 dark:text-gray-400">
                           <Clock className="h-3 w-3 mr-1" />
                           {formatDate(safeToDate(purchase.createdAt))}
                         </div>
                         <span className={cn(
                           "px-2 py-0.5 rounded-full text-[8px] font-bold uppercase tracking-wider",
-                          purchase.type === 'adjustment' ? "bg-gray-100 text-gray-600" : "bg-blue-100 text-blue-600"
+                          purchase.type === 'adjustment' ? "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400" : "bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400"
                         )}>
                           {t(`productDetail.${purchase.type}`)}
                         </span>
@@ -1141,23 +1260,23 @@ const ProductDetail: React.FC = () => {
                         <div>
                           <p className={cn(
                             "text-lg font-bold",
-                            purchase.quantity > 0 ? "text-green-600" : "text-red-600"
+                            purchase.quantity > 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"
                           )}>
                             {purchase.quantity > 0 ? '+' : ''}{t('productDetail.units', { count: purchase.quantity })}
                           </p>
                           {purchase.type === 'purchase' && (
-                            <p className="text-xs text-gray-600">
+                            <p className="text-xs text-gray-600 dark:text-gray-400">
                               {formatCurrency(purchase.price || 0)} {t('productDetail.perUnit')}
                             </p>
                           )}
                         </div>
                         <div className="text-right">
-                          <div className="flex items-center text-xs text-gray-600 justify-end">
+                          <div className="flex items-center text-xs text-gray-600 dark:text-gray-400 justify-end">
                             <UserIcon className="h-3 w-3 mr-1" />
                             {users[purchase.recordedBy]?.name || t('common.unknown')}
                           </div>
                           {purchase.type === 'purchase' && purchase.expiryDate && (
-                            <p className="text-[10px] text-gray-400 mt-1">
+                            <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-1">
                               {t('productDetail.exp')}: {formatDate(safeToDate(purchase.expiryDate))}
                             </p>
                           )}
@@ -1165,7 +1284,7 @@ const ProductDetail: React.FC = () => {
                       </div>
                       
                       {purchase.note && (
-                        <p className="text-xs text-gray-500 italic bg-gray-50 p-2 rounded-lg">
+                        <p className="text-xs text-gray-500 dark:text-gray-400 italic bg-gray-50 dark:bg-gray-800 p-2 rounded-lg">
                           {purchase.note}
                         </p>
                       )}
@@ -1173,8 +1292,8 @@ const ProductDetail: React.FC = () => {
                   ))
                 ) : (
                   <div className="px-6 py-20 text-center">
-                    <History className="h-12 w-12 text-gray-200 mx-auto mb-4" />
-                    <p className="text-gray-400 italic">{t('productDetail.noHistory')}</p>
+                    <History className="h-12 w-12 text-gray-200 dark:text-gray-800 mx-auto mb-4" />
+                    <p className="text-gray-400 dark:text-gray-500 italic">{t('productDetail.noHistory')}</p>
                   </div>
                 )}
               </div>
@@ -1191,20 +1310,20 @@ const ProductDetail: React.FC = () => {
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden"
+              className="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden transition-colors"
             >
-              <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
-                <h3 className="text-lg font-bold text-gray-900">{t('productDetail.recordNewPurchase')}</h3>
-                <button onClick={() => setShowPurchaseModal(false)} className="p-1 hover:bg-gray-200 rounded-full transition-colors">
-                  <X className="h-5 w-5 text-gray-500" />
+              <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-800 flex justify-between items-center bg-gray-50 dark:bg-gray-800/50">
+                <h3 className="text-lg font-bold text-gray-900 dark:text-white">{t('productDetail.recordNewPurchase')}</h3>
+                <button onClick={() => setShowPurchaseModal(false)} className="p-1 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-full transition-colors">
+                  <X className="h-5 w-5 text-gray-500 dark:text-gray-400" />
                 </button>
               </div>
               <form onSubmit={handleRecordPurchase} className="p-6 space-y-6">
-                <div className="bg-blue-50 p-4 rounded-xl space-y-4">
-                  <p className="text-xs font-bold text-blue-600 uppercase tracking-wider">{t('productDetail.unitCalculator')}</p>
+                <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-xl space-y-4">
+                  <p className="text-xs font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider">{t('productDetail.unitCalculator')}</p>
                   <div className="grid grid-cols-2 gap-4">
                     <div>
-                      <label className="block text-[10px] font-bold text-blue-500 mb-1 uppercase">{t('productDetail.numberOfBoxes')}</label>
+                      <label className="block text-[10px] font-bold text-blue-500 dark:text-blue-400 mb-1 uppercase">{t('productDetail.numberOfBoxes')}</label>
                       <input
                         type="number"
                         placeholder="0"
@@ -1218,11 +1337,11 @@ const ProductDetail: React.FC = () => {
                             setPurchaseQty((boxes * perBox).toString());
                           }
                         }}
-                        className="block w-full px-3 py-2 bg-white border border-blue-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                        className="block w-full px-3 py-2 bg-white dark:bg-gray-800 border border-blue-200 dark:border-blue-800 rounded-lg text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                       />
                     </div>
                     <div>
-                      <label className="block text-[10px] font-bold text-blue-500 mb-1 uppercase">{t('productDetail.unitsPerBox')}</label>
+                      <label className="block text-[10px] font-bold text-blue-500 dark:text-blue-400 mb-1 uppercase">{t('productDetail.unitsPerBox')}</label>
                       <input
                         type="number"
                         placeholder="0"
@@ -1236,13 +1355,13 @@ const ProductDetail: React.FC = () => {
                             setPurchaseQty((boxes * perBox).toString());
                           }
                         }}
-                        className="block w-full px-3 py-2 bg-white border border-blue-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                        className="block w-full px-3 py-2 bg-white dark:bg-gray-800 border border-blue-200 dark:border-blue-800 rounded-lg text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                       />
                     </div>
                   </div>
                   {parseInt(numBoxes) > 0 && parseInt(unitsPerBox) > 0 && (
-                    <div className="text-center pt-2 border-t border-blue-100">
-                      <p className="text-sm font-bold text-blue-700">
+                    <div className="text-center pt-2 border-t border-blue-100 dark:border-blue-800">
+                      <p className="text-sm font-bold text-blue-700 dark:text-blue-300">
                         {t('productDetail.total')}: {numBoxes} × {unitsPerBox} = {parseInt(numBoxes) * parseInt(unitsPerBox)} {t('productDetail.unitsLabel')}
                       </p>
                     </div>
@@ -1250,10 +1369,10 @@ const ProductDetail: React.FC = () => {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">{t('productDetail.purchaseQuantity')}</label>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t('productDetail.purchaseQuantity')}</label>
                   <div className="relative">
                     <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                      <Package className="h-5 w-5 text-gray-400" />
+                      <Package className="h-5 w-5 text-gray-400 dark:text-gray-500" />
                     </div>
                     <input
                       type="number"
@@ -1261,17 +1380,17 @@ const ProductDetail: React.FC = () => {
                       min="1"
                       value={purchaseQty}
                       onChange={(e) => setPurchaseQty(e.target.value)}
-                      className="block w-full pl-10 pr-3 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      className="block w-full pl-10 pr-3 py-2.5 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-xl text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                       placeholder="e.g. 50"
                     />
                   </div>
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">{t('productDetail.purchasePrice')}</label>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t('productDetail.purchasePrice')}</label>
                   <div className="relative">
                     <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                      <DollarSign className="h-5 w-5 text-gray-400" />
+                      <DollarSign className="h-5 w-5 text-gray-400 dark:text-gray-500" />
                     </div>
                     <input
                       type="number"
@@ -1280,34 +1399,34 @@ const ProductDetail: React.FC = () => {
                       min="0"
                       value={purchasePrice}
                       onChange={(e) => setPurchasePrice(e.target.value)}
-                      className="block w-full pl-10 pr-3 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      className="block w-full pl-10 pr-3 py-2.5 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-xl text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                       placeholder="0.00"
                     />
                   </div>
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">{t('productDetail.batchExpiryDate')}</label>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t('productDetail.batchExpiryDate')}</label>
                   <div className="relative">
                     <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                      <Calendar className="h-5 w-5 text-gray-400" />
+                      <Calendar className="h-5 w-5 text-gray-400 dark:text-gray-500" />
                     </div>
                     <input
                       type="date"
                       required
                       value={purchaseExpiry}
                       onChange={(e) => setPurchaseExpiry(e.target.value)}
-                      className="block w-full pl-10 pr-3 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      className="block w-full pl-10 pr-3 py-2.5 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-xl text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                     />
                   </div>
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">{t('productDetail.notes')} ({t('common.optional')})</label>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t('productDetail.notes')} ({t('common.optional')})</label>
                   <textarea
                     value={purchaseNote}
                     onChange={(e) => setPurchaseNote(e.target.value)}
-                    className="block w-full px-3 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    className="block w-full px-3 py-2.5 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-xl text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                     placeholder={t('productDetail.optionalNotes')}
                     rows={2}
                   />
@@ -1317,14 +1436,14 @@ const ProductDetail: React.FC = () => {
                   <button
                     type="button"
                     onClick={() => setShowPurchaseModal(false)}
-                    className="flex-1 px-4 py-2.5 border border-gray-300 text-gray-700 font-medium rounded-xl hover:bg-gray-50 transition-colors"
+                    className="flex-1 px-4 py-2.5 border border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-300 font-medium rounded-xl hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
                   >
                     {t('common.cancel')}
                   </button>
                   <button
                     type="submit"
                     disabled={submitting}
-                    className="flex-1 px-4 py-2.5 bg-blue-600 text-white font-medium rounded-xl hover:bg-blue-700 transition-colors shadow-md disabled:opacity-50"
+                    className="flex-1 px-4 py-2.5 bg-blue-600 dark:bg-blue-500 text-white font-medium rounded-xl hover:bg-blue-700 dark:hover:bg-blue-600 transition-colors shadow-md disabled:opacity-50"
                   >
                     {submitting ? t('common.saving') : t('productDetail.saveRecord')}
                   </button>
@@ -1343,87 +1462,102 @@ const ProductDetail: React.FC = () => {
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden"
+              className="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden transition-colors"
             >
-              <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
-                <h3 className="text-lg font-bold text-gray-900">{t('productDetail.manualStockAdjustment')}</h3>
-                <button onClick={() => setShowAdjustmentModal(false)} className="p-1 hover:bg-gray-200 rounded-full transition-colors">
-                  <X className="h-5 w-5 text-gray-500" />
+              <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-800 flex justify-between items-center bg-gray-50 dark:bg-gray-800/50">
+                <h3 className="text-lg font-bold text-gray-900 dark:text-white">{t('productDetail.manualStockAdjustment')}</h3>
+                <button onClick={() => setShowAdjustmentModal(false)} className="p-1 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-full transition-colors">
+                  <X className="h-5 w-5 text-gray-500 dark:text-gray-400" />
                 </button>
               </div>
               <form onSubmit={handleManualAdjustment} className="p-6 space-y-6">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">{t('productDetail.adjustmentType')}</label>
-                  <div className="flex items-center bg-gray-100 rounded-xl p-1 mb-4">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t('productDetail.adjustmentType')}</label>
+                  <div className="flex items-center bg-gray-100 dark:bg-gray-800 rounded-xl p-1 mb-4">
                     <button
                       type="button"
                       onClick={() => setAdjustmentType('in')}
                       className={cn(
-                        "flex-1 py-2 text-sm font-bold rounded-lg transition-all",
-                        adjustmentType === 'in' ? "bg-white text-green-600 shadow-sm" : "text-gray-500"
+                        "flex-1 py-2 text-xs font-bold rounded-lg transition-all",
+                        adjustmentType === 'in' ? "bg-white dark:bg-gray-700 text-green-600 dark:text-green-400 shadow-sm" : "text-gray-500 dark:text-gray-400"
                       )}
                     >
-                      <Plus className="h-4 w-4 inline mr-1" />
+                      <Plus className="h-3 w-3 inline mr-1" />
                       {t('productDetail.addStock')}
                     </button>
                     <button
                       type="button"
                       onClick={() => setAdjustmentType('out')}
                       className={cn(
-                        "flex-1 py-2 text-sm font-bold rounded-lg transition-all",
-                        adjustmentType === 'out' ? "bg-white text-red-600 shadow-sm" : "text-gray-500"
+                        "flex-1 py-2 text-xs font-bold rounded-lg transition-all",
+                        adjustmentType === 'out' ? "bg-white dark:bg-gray-700 text-red-600 dark:text-red-400 shadow-sm" : "text-gray-500 dark:text-gray-400"
                       )}
                     >
-                      <Minus className="h-4 w-4 inline mr-1" />
+                      <Minus className="h-3 w-3 inline mr-1" />
                       {t('productDetail.removeStock')}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAdjustmentType('set')}
+                      className={cn(
+                        "flex-1 py-2 text-xs font-bold rounded-lg transition-all",
+                        adjustmentType === 'set' ? "bg-white dark:bg-gray-700 text-blue-600 dark:text-blue-400 shadow-sm" : "text-gray-500 dark:text-gray-400"
+                      )}
+                    >
+                      <Edit2 className="h-3 w-3 inline mr-1" />
+                      {t('productDetail.setStock')}
                     </button>
                   </div>
 
-                  <label className="block text-sm font-medium text-gray-700 mb-1">{t('productDetail.quantity')}</label>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    {adjustmentType === 'set' ? t('productDetail.setStockLabel') : t('productDetail.quantity')}
+                  </label>
                   <div className="relative">
                     <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                      {adjustmentType === 'in' ? <Plus className="h-5 w-5 text-green-500" /> : <Minus className="h-5 w-5 text-red-500" />}
+                      {adjustmentType === 'in' ? <Plus className="h-5 w-5 text-green-500" /> : 
+                       adjustmentType === 'out' ? <Minus className="h-5 w-5 text-red-500" /> :
+                       <Package className="h-5 w-5 text-blue-500" />}
                     </div>
                     <input
                       type="number"
                       required
-                      min="1"
+                      min={adjustmentType === 'set' ? "0" : "1"}
                       value={adjustmentQty}
                       onChange={(e) => setAdjustmentQty(e.target.value)}
-                      className="block w-full pl-10 pr-3 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                      placeholder={t('productDetail.enterQuantity')}
+                      className="block w-full pl-10 pr-3 py-2.5 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-xl text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      placeholder={adjustmentType === 'set' ? product?.currentStock?.toString() : t('productDetail.enterQuantity')}
                     />
                   </div>
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">{t('productDetail.reasonForAdjustment')}</label>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t('productDetail.reasonForAdjustment')}</label>
                   <textarea
                     required
                     value={adjustmentNote}
                     onChange={(e) => setAdjustmentNote(e.target.value)}
-                    className="block w-full px-3 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                    placeholder={t('productDetail.reasonPlaceholder')}
+                    className="block w-full px-3 py-2.5 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-xl text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    placeholder={adjustmentType === 'set' ? t('productDetail.inventoryCorrection') : t('productDetail.reasonPlaceholder')}
                     rows={3}
                   />
                 </div>
 
-                {adjustmentType === 'in' && (
+                {adjustmentType !== 'out' && (
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">{t('productDetail.expiryDate')} ({t('common.optional')})</label>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t('productDetail.expiryDate')} ({t('common.optional')})</label>
                     <div className="relative">
                       <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                        <Calendar className="h-5 w-5 text-gray-400" />
+                        <Calendar className="h-5 w-5 text-gray-400 dark:text-gray-500" />
                       </div>
                       <input
                         type="text"
                         placeholder="dd/mm/yyyy"
                         value={adjustmentExpiry}
                         onChange={(e) => setAdjustmentExpiry(e.target.value)}
-                        className="block w-full pl-10 pr-3 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                        className="block w-full pl-10 pr-3 py-2.5 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-xl text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                       />
                     </div>
-                    <p className="text-[10px] text-gray-400 mt-1 italic">{t('productDetail.dateFormatHint')}</p>
+                    <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-1 italic">{t('productDetail.dateFormatHint')}</p>
                   </div>
                 )}
 
@@ -1431,14 +1565,14 @@ const ProductDetail: React.FC = () => {
                   <button
                     type="button"
                     onClick={() => setShowAdjustmentModal(false)}
-                    className="flex-1 px-4 py-2.5 border border-gray-300 text-gray-700 font-medium rounded-xl hover:bg-gray-50 transition-colors"
+                    className="flex-1 px-4 py-2.5 border border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-300 font-medium rounded-xl hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
                   >
                     {t('common.cancel')}
                   </button>
                   <button
                     type="submit"
                     disabled={submitting}
-                    className="flex-1 px-4 py-2.5 bg-gray-900 text-white font-medium rounded-xl hover:bg-gray-800 transition-colors shadow-md disabled:opacity-50"
+                    className="flex-1 px-4 py-2.5 bg-gray-900 dark:bg-gray-800 text-white font-medium rounded-xl hover:bg-gray-800 dark:hover:bg-gray-700 transition-colors shadow-md disabled:opacity-50"
                   >
                     {submitting ? t('common.saving') : t('productDetail.saveAdjustment')}
                   </button>
@@ -1467,19 +1601,19 @@ const ProductDetail: React.FC = () => {
               initial={{ opacity: 0, scale: 0.9, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.9, y: 20 }}
-              className="bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden"
+              className="bg-white dark:bg-gray-900 rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden transition-colors"
             >
               <div className="p-8 text-center space-y-6">
-                <div className="bg-blue-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto">
-                  <LinkIcon className="h-8 w-8 text-blue-600" />
+                <div className="bg-blue-100 dark:bg-blue-900/30 w-16 h-16 rounded-full flex items-center justify-center mx-auto">
+                  <LinkIcon className="h-8 w-8 text-blue-600 dark:text-blue-400" />
                 </div>
                 
                 <div>
-                  <h3 className="text-xl font-bold text-gray-900">{t('productDetail.linkNewBarcodeTitle')}</h3>
-                  <p className="text-gray-500 mt-2">
+                  <h3 className="text-xl font-bold text-gray-900 dark:text-white">{t('productDetail.linkNewBarcodeTitle')}</h3>
+                  <p className="text-gray-500 dark:text-gray-400 mt-2">
                     {t('productDetail.barcodeNotFound', { barcode: scannedBarcode })}
                   </p>
-                  <p className="text-sm text-gray-500 mt-1">
+                  <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
                     {t('productDetail.linkToProduct', { name: product.name })}
                   </p>
                 </div>
@@ -1488,7 +1622,7 @@ const ProductDetail: React.FC = () => {
                   <button
                     onClick={handleLinkBarcode}
                     disabled={linking}
-                    className="w-full py-4 bg-blue-600 text-white font-bold rounded-2xl hover:bg-blue-700 transition-all shadow-md disabled:opacity-50"
+                    className="w-full py-4 bg-blue-600 dark:bg-blue-500 text-white font-bold rounded-2xl hover:bg-blue-700 dark:hover:bg-blue-600 transition-all shadow-md disabled:opacity-50"
                   >
                     {linking ? t('common.linking') : t('productDetail.linkToCurrentProduct')}
                   </button>
@@ -1498,7 +1632,7 @@ const ProductDetail: React.FC = () => {
                       setScannedBarcode(null);
                     }}
                     disabled={linking}
-                    className="w-full py-4 bg-white border-2 border-gray-200 text-gray-700 font-bold rounded-2xl hover:bg-gray-50 transition-all disabled:opacity-50"
+                    className="w-full py-4 bg-white dark:bg-gray-900 border-2 border-gray-200 dark:border-gray-800 text-gray-700 dark:text-gray-300 font-bold rounded-2xl hover:bg-gray-50 dark:hover:bg-gray-800 transition-all disabled:opacity-50"
                   >
                     {t('common.cancel')}
                   </button>
@@ -1516,28 +1650,28 @@ const ProductDetail: React.FC = () => {
               initial={{ opacity: 0, scale: 0.9, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.9, y: 20 }}
-              className="bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden"
+              className="bg-white dark:bg-gray-900 rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden transition-colors"
             >
               <div className="p-8 text-center">
-                <div className="bg-red-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
-                  <Trash2 className="h-8 w-8 text-red-600" />
+                <div className="bg-red-100 dark:bg-red-900/30 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
+                  <Trash2 className="h-8 w-8 text-red-600 dark:text-red-400" />
                 </div>
-                <h3 className="text-xl font-bold text-gray-900 mb-2">{t('products.confirmDelete')}</h3>
-                <p className="text-gray-500 text-sm mb-6">
+                <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-2">{t('products.confirmDelete')}</h3>
+                <p className="text-gray-500 dark:text-gray-400 text-sm mb-6">
                   {t('products.deleteConfirm')}
                 </p>
                 <div className="space-y-3">
                   <button
                     onClick={confirmDelete}
                     disabled={deleting}
-                    className="w-full py-4 bg-red-600 text-white font-bold rounded-2xl hover:bg-red-700 transition-all shadow-md disabled:opacity-50"
+                    className="w-full py-4 bg-red-600 dark:bg-red-500 text-white font-bold rounded-2xl hover:bg-red-700 dark:hover:bg-red-600 transition-all shadow-md disabled:opacity-50"
                   >
                     {deleting ? t('common.loading') : t('common.delete')}
                   </button>
                   <button
                     onClick={() => setShowDeleteConfirm(false)}
                     disabled={deleting}
-                    className="w-full py-4 bg-white border-2 border-gray-200 text-gray-700 font-bold rounded-2xl hover:bg-gray-50 transition-all disabled:opacity-50"
+                    className="w-full py-4 bg-white dark:bg-gray-900 border-2 border-gray-200 dark:border-gray-800 text-gray-700 dark:text-gray-300 font-bold rounded-2xl hover:bg-gray-50 dark:hover:bg-gray-800 transition-all disabled:opacity-50"
                   >
                     {t('common.cancel')}
                   </button>

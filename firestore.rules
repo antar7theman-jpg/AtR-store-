@@ -15,7 +15,16 @@ service cloud.firestore {
     //   - name: string (required) - User's display name
     //   - active: boolean (optional) - Account status
     //   - phone: string (optional) - User's phone number
+    //   - teamIds: list (optional) - List of team IDs
     //   - notificationPreferences: map (optional) - User's alert preferences
+    //
+    // Collection: teams
+    // Document ID: teamId (auto-generated)
+    // Fields:
+    //   - name: string (required) - Team name
+    //   - description: string (optional) - Team description
+    //   - createdAt: timestamp (required) - Creation time
+    //   - memberUids: list (required) - List of user UIDs in the team
     //
     // Collection: products
     // Document ID: productId (auto-generated)
@@ -66,6 +75,7 @@ service cloud.firestore {
     //   - dueDate: timestamp (optional) - Due date
     //   - createdBy: string (required) - UID of creator
     //   - assignedTo: string (optional) - UID of assigned user
+    //   - assignedTeamId: string (optional) - ID of assigned team
     //
     // ===============================================================
 
@@ -82,12 +92,10 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      return isAuthenticated() &&
-        (
-          request.auth.token.email.lower() == "antar7theman@gmail.com" ||
-          (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
-           get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin')
-        );
+      return isAuthenticated() && 
+        ((request.auth.token.email == "antar7theman@gmail.com" && request.auth.token.email_verified == true) || 
+         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'));
     }
 
     function isStaff() {
@@ -96,12 +104,22 @@ service cloud.firestore {
              get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'staff';
     }
 
+    function isUser() {
+      return isAuthenticated() && 
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'user';
+    }
+
     function hasRequiredFields(fields) {
       return request.resource.data.keys().hasAll(fields);
     }
 
     function hasOnlyAllowedFields(fields) {
       return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function areImmutableFieldsUnchanged(fields) {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(fields);
     }
 
     function isValidEmail(email) {
@@ -127,14 +145,16 @@ service cloud.firestore {
     // ===============================================================
 
     function isValidUser(data) {
-      return data.keys().hasOnly(['uid', 'email', 'role', 'name', 'active', 'phone', 'notificationPreferences']) &&
+      return data.keys().hasOnly(['uid', 'email', 'role', 'name', 'photoUrl', 'active', 'phone', 'teamIds', 'notificationPreferences']) &&
              (!('uid' in data) || data.uid is string) &&
              (!('email' in data) || (data.email is string && isValidEmail(data.email))) &&
-             (!('role' in data) || data.role in ['admin', 'staff']) &&
+             (!('role' in data) || (data.role in ['admin', 'staff', 'user'])) &&
              (!('name' in data) || (data.name is string && data.name.size() > 0)) &&
+             (!('photoUrl' in data) || data.photoUrl == null || data.photoUrl is string) &&
              (!('active' in data) || data.active is bool) &&
-             (!('phone' in data) || (data.phone is string && data.phone.size() <= 50)) &&
-             (!('notificationPreferences' in data) || isValidNotificationPrefs(data.notificationPreferences));
+             (!('phone' in data) || data.phone == null || (data.phone is string && data.phone.size() <= 50)) &&
+             (!('teamIds' in data) || data.teamIds is list) &&
+             (!('notificationPreferences' in data) || data.notificationPreferences == null || isValidNotificationPrefs(data.notificationPreferences));
     }
 
     function isValidProduct(data) {
@@ -144,13 +164,13 @@ service cloud.firestore {
              data.currentStock is number &&
              (!('active' in data) || data.active is bool) &&
              (!('barcodes' in data) || data.barcodes is list) &&
-             (!('quantityPerBox' in data) || data.quantityPerBox is number) &&
-             (!('lastPurchasePrice' in data) || data.lastPurchasePrice is number) &&
-             (!('expiryDate' in data) || data.expiryDate is timestamp) &&
-             (!('lowStockThreshold' in data) || data.lowStockThreshold is number) &&
-             (!('expiryAlertThreshold' in data) || data.expiryAlertThreshold is number) &&
-             (!('category' in data) || data.category is string) &&
-             (!('imageUrl' in data) || data.imageUrl is string);
+             (!('quantityPerBox' in data) || data.quantityPerBox == null || data.quantityPerBox is number) &&
+             (!('lastPurchasePrice' in data) || data.lastPurchasePrice == null || data.lastPurchasePrice is number) &&
+             (!('expiryDate' in data) || data.expiryDate == null || data.expiryDate is timestamp) &&
+             (!('lowStockThreshold' in data) || data.lowStockThreshold == null || data.lowStockThreshold is number) &&
+             (!('expiryAlertThreshold' in data) || data.expiryAlertThreshold == null || data.expiryAlertThreshold is number) &&
+             (!('category' in data) || data.category == null || data.category is string) &&
+             (!('imageUrl' in data) || data.imageUrl == null || data.imageUrl is string);
     }
 
     function isValidPurchase(data) {
@@ -161,8 +181,8 @@ service cloud.firestore {
              data.recordedBy == request.auth.uid &&
              data.type in ['purchase', 'adjustment'] &&
              (data.type == 'adjustment' || (
-               (!('price' in data) || data.price is number) &&
-               (!('expiryDate' in data) || data.expiryDate is timestamp)
+               (!('price' in data) || data.price == null || data.price is number) &&
+               (!('expiryDate' in data) || data.expiryDate == null || data.expiryDate is timestamp)
              ));
     }
 
@@ -182,10 +202,10 @@ service cloud.firestore {
              data.notificationPhone is string &&
              data.phoneNumber is string &&
              data.enableExpiryNotifications is bool &&
-             (!('notificationEmail' in data) || data.notificationEmail is string) &&
+             (!('notificationEmail' in data) || data.notificationEmail == null || data.notificationEmail is string) &&
              (!('enableLowStockNotifications' in data) || data.enableLowStockNotifications is bool) &&
              (!('enableTaskNotifications' in data) || data.enableTaskNotifications is bool) &&
-             (!('lastNotificationCheck' in data) || data.lastNotificationCheck is timestamp) &&
+             (!('lastNotificationCheck' in data) || data.lastNotificationCheck == null || data.lastNotificationCheck is timestamp) &&
              (!('expirySms' in data) || data.expirySms is bool) &&
              (!('expiryEmail' in data) || data.expiryEmail is bool) &&
              (!('expiryPush' in data) || data.expiryPush is bool) &&
@@ -199,19 +219,30 @@ service cloud.firestore {
              (!('enableNativeSmsNotifications' in data) || data.enableNativeSmsNotifications is bool) &&
              (!('enableEmailNotifications' in data) || data.enableEmailNotifications is bool) &&
              (!('enablePushNotifications' in data) || data.enablePushNotifications is bool) &&
-             (!('gmailPass' in data) || data.gmailPass is string);
+             (!('gmailPass' in data) || data.gmailPass == null || data.gmailPass is string);
     }
 
     function isValidTask(data) {
       return hasRequiredFields(['title', 'priority', 'completed', 'createdAt', 'createdBy']) &&
+             hasOnlyAllowedFields(['title', 'description', 'priority', 'completed', 'status', 'createdAt', 'dueDate', 'createdBy', 'assignedTo', 'assignedTeamId', 'completionImage']) &&
              data.title is string && data.title.size() > 0 &&
              data.priority in ['low', 'medium', 'high'] &&
              data.completed is bool &&
+             (!('status' in data) || data.status in ['pending', 'in-progress', 'completed']) &&
              data.createdAt is timestamp &&
              data.createdBy is string &&
-             (!('description' in data) || data.description is string) &&
-             (!('dueDate' in data) || data.dueDate is timestamp) &&
-             (!('assignedTo' in data) || data.assignedTo is string);
+             (!('description' in data) || data.description == null || data.description is string) &&
+             (!('dueDate' in data) || data.dueDate == null || data.dueDate is timestamp) &&
+             (!('assignedTo' in data) || data.assignedTo == null || data.assignedTo is string) &&
+             (!('assignedTeamId' in data) || data.assignedTeamId == null || data.assignedTeamId is string) &&
+             (!('completionImage' in data) || data.completionImage == null || data.completionImage is string);
+    }
+
+    function isValidTeam(data) {
+      return hasRequiredFields(['name', 'createdAt', 'memberUids']) &&
+             data.name is string && data.name.size() > 0 &&
+             data.createdAt is timestamp &&
+             data.memberUids is list;
     }
 
     // ===============================================================
@@ -227,14 +258,15 @@ service cloud.firestore {
       // 2. Default admin bootstrap
       // 3. User claiming a pre-provisioned profile (ID is their UID, email matches)
       allow create: if (isAdmin() && isValidUser(request.resource.data)) || 
-                      (isOwner(userId) && request.auth.token.email.lower() == "antar7theman@gmail.com" && isValidUser(request.resource.data)) ||
-                      (isOwner(userId) && isValidUser(request.resource.data) && request.resource.data.email == request.auth.token.email);
+                      (isOwner(userId) && request.auth.token.email == "antar7theman@gmail.com" && request.auth.token.email_verified == true && isValidUser(request.resource.data) && request.resource.data.role == 'admin') ||
+                      (isOwner(userId) && isValidUser(request.resource.data) && request.resource.data.email == request.auth.token.email && request.resource.data.role == 'staff');
       
       // Admins can update all profiles. Users can update their own profile (but not role/active status).
-      allow update: if (isAdmin() && isValidUser(request.resource.data)) ||
-                      (isOwner(userId) && isValidUser(request.resource.data) && 
-                       request.resource.data.role == resource.data.role &&
-                       request.resource.data.active == resource.data.active);
+      // RESTRICTION: Only antar7theman@gmail.com can change roles.
+      allow update: if (isAuthenticated() && isValidUser(request.resource.data)) && (
+                        (request.resource.data.role == resource.data.role || (request.auth.token.email == "antar7theman@gmail.com" && request.auth.token.email_verified == true)) &&
+                        (isAdmin() || (isOwner(userId) && request.resource.data.active == resource.data.active))
+                      );
       
       // Only admins can delete users, or a user deleting their pre-provisioned profile.
       allow delete: if isAdmin() || (isAuthenticated() && request.auth.token.email == resource.data.email);
@@ -244,20 +276,20 @@ service cloud.firestore {
       // All authenticated users can read products.
       allow read: if isAuthenticated();
       
-      // Admins and staff can create or delete products.
+      // Admins and staff can create or update products.
       allow create: if (isAdmin() || isStaff()) && isValidProduct(request.resource.data);
-      allow delete: if isAdmin() || isStaff();
-      
-      // Admins and staff can update all fields.
       allow update: if (isAdmin() || isStaff()) && isValidProduct(request.resource.data);
+      
+      // ONLY admins can delete products.
+      allow delete: if isAdmin();
     }
 
     match /purchases/{purchaseId} {
       // All authenticated users can read purchase history.
       allow read: if isAuthenticated();
       
-      // All authenticated users can create purchase records.
-      allow create: if isAuthenticated() && isValidPurchase(request.resource.data);
+      // Admins and staff can create purchase records.
+      allow create: if (isAdmin() || isStaff()) && isValidPurchase(request.resource.data);
       
       // Purchases are immutable for staff. Admins can delete them (e.g. when deleting a product).
       allow update: if false;
@@ -268,8 +300,8 @@ service cloud.firestore {
       // All authenticated users can read transaction history.
       allow read: if isAuthenticated();
       
-      // All authenticated users can create transaction records.
-      allow create: if isAuthenticated() && isValidTransaction(request.resource.data);
+      // Admins and staff can create transaction records.
+      allow create: if (isAdmin() || isStaff()) && isValidTransaction(request.resource.data);
       
       // Transactions are immutable for staff. Admins can delete them (e.g. when deleting a product).
       allow update: if false;
@@ -280,26 +312,68 @@ service cloud.firestore {
       // All authenticated users can read system settings.
       allow read: if isAuthenticated();
       
-      // Admins and staff can update system settings.
-      allow update: if (isAdmin() || isStaff()) && isValidSystemSettings(request.resource.data);
-      
-      // Admins and staff can create system settings.
-      allow create: if (isAdmin() || isStaff()) && isValidSystemSettings(request.resource.data);
+      // ONLY admins can update or create system settings.
+      allow update: if isAdmin() && isValidSystemSettings(request.resource.data);
+      allow create: if isAdmin() && isValidSystemSettings(request.resource.data);
     }
 
     match /tasks/{taskId} {
       // All authenticated users can read tasks.
       allow read: if isAuthenticated();
       
-      // Any authenticated user can create a task.
-      allow create: if isAuthenticated() && isValidTask(request.resource.data) && request.resource.data.createdBy == request.auth.uid;
+      // Admins and staff can create tasks.
+      allow create: if (isAdmin() || isStaff()) && 
+                      isValidTask(request.resource.data) && 
+                      request.resource.data.createdBy == request.auth.uid;
       
-      // Admins, the creator, or the assignee can update a task.
-      allow update: if isAuthenticated() && isValidTask(request.resource.data) && 
-                      (isAdmin() || request.auth.uid == resource.data.createdBy || request.auth.uid == resource.data.assignedTo);
+      // All authenticated users can update tasks.
+      // We ensure that createdBy and createdAt are immutable.
+      // RESTRICTION: If assignedTo or assignedTeamId is set, only the assignee, a team member, the creator, or an admin can update.
+      // Staff can also pick up unassigned tasks.
+      allow update: if isAuthenticated() && 
+                      isValidTask(request.resource.data) &&
+                      areImmutableFieldsUnchanged(['createdBy', 'createdAt']) &&
+                      (
+                        isAdmin() ||
+                        resource.data.assignedTo == request.auth.uid || 
+                        resource.data.createdBy == request.auth.uid || 
+                        (isStaff() && (!('assignedTo' in resource.data) || resource.data.assignedTo == null)) ||
+                        (resource.data.assignedTeamId != null && 
+                         exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+                         resource.data.assignedTeamId in get(/databases/$(database)/documents/users/$(request.auth.uid)).data.teamIds)
+                      );
       
-      // Only admins or the creator can delete a task.
+      // Admins can delete any task. Creators can delete their own tasks.
       allow delete: if isAdmin() || (isAuthenticated() && request.auth.uid == resource.data.createdBy);
+    }
+
+    match /teams/{teamId} {
+      // All authenticated users can read teams.
+      allow get, list: if isAuthenticated();
+      
+      // Only admins can create, update, or delete teams.
+      allow create: if isAdmin() && isValidTeam(request.resource.data);
+      allow update: if isAdmin() && isValidTeam(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /chatMessages/{messageId} {
+      // All authenticated users can read chat messages.
+      allow read: if isAuthenticated();
+      // All authenticated users can send messages.
+      allow create: if isAuthenticated() && 
+                      request.resource.data.senderId == request.auth.uid &&
+                      request.resource.data.text is string &&
+                      request.resource.data.text.size() > 0 &&
+                      request.resource.data.text.size() < 1000;
+      // Messages cannot be edited or deleted by users for now (audit trail).
+      allow update, delete: if isAdmin();
+    }
+
+    match /pushSubscriptions/{subId} {
+      // Authenticated users can create or update their own subscriptions.
+      // We use a base64 encoded endpoint as the ID.
+      allow read, write: if isAuthenticated();
     }
 
     match /secrets/{secretId} {
@@ -308,8 +382,8 @@ service cloud.firestore {
     }
 
     match /test/connection {
-      // Allow authenticated users to read the connection test document
-      allow read: if isAuthenticated();
+      // Allow anyone to read the connection test document to verify the database is reachable
+      allow read: if true;
     }
 
     // Default deny

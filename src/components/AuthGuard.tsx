@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { doc, getDoc, setDoc, deleteDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc, deleteDoc, updateDoc } from 'firebase/firestore';
 import { auth, db } from '../firebase';
 import { UserProfile, UserRole } from '../types';
 import { Navigate, useLocation } from 'react-router-dom';
@@ -11,6 +11,7 @@ interface AuthContextType {
   loading: boolean;
   isAdmin: boolean;
   isStaff: boolean;
+  isUser: boolean;
 }
 
 const AuthContext = createContext<AuthContextType>({
@@ -19,6 +20,7 @@ const AuthContext = createContext<AuthContextType>({
   loading: true,
   isAdmin: false,
   isStaff: false,
+  isUser: false,
 });
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -34,29 +36,49 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const userDoc = await getDoc(doc(db, 'users', user.uid));
           if (userDoc.exists()) {
             const data = userDoc.data() as UserProfile;
-            if (user.email?.toLowerCase() === "antar7theman@gmail.com" && data.name === 'Default Admin') {
+            // Ensure UID is correct in the document
+            if (data.uid !== user.uid) {
+              const updatedProfile = { ...data, uid: user.uid };
+              await updateDoc(doc(db, 'users', user.uid), { uid: user.uid });
+              setProfile(updatedProfile);
+            } else if (user.email?.toLowerCase() === "antar7theman@gmail.com" && data.name === 'Default Admin') {
               const updatedProfile = { ...data, name: 'antar deffas' };
-              await setDoc(doc(db, 'users', user.uid), updatedProfile);
+              await updateDoc(doc(db, 'users', user.uid), { name: 'antar deffas' });
               setProfile(updatedProfile);
             } else {
               setProfile(data);
             }
           } else {
-            // Check if there's a pre-provisioned profile by email
-            const sanitizedEmail = user.email?.replace(/[^a-zA-Z0-9]/g, '_');
-            if (sanitizedEmail) {
-              const preDoc = await getDoc(doc(db, 'users', sanitizedEmail));
+            // Check if there's a pre-provisioned profile by email (both sanitized and unsanitized)
+            const email = user.email?.toLowerCase();
+            if (email) {
+              const sanitizedEmail = email.replace(/[^a-zA-Z0-9]/g, '_');
+              
+              // Try sanitized first
+              let preDoc = await getDoc(doc(db, 'users', sanitizedEmail));
+              let preDocId = sanitizedEmail;
+              
+              // If not found, try unsanitized (legacy)
+              if (!preDoc.exists()) {
+                preDoc = await getDoc(doc(db, 'users', email));
+                preDocId = email;
+              }
+
               if (preDoc.exists()) {
                 const data = preDoc.data();
                 // Claim the profile: move to UID doc
                 const newProfile = {
                   ...data,
                   uid: user.uid,
-                  name: user.displayName || data.name || 'User'
+                  email: user.email,
+                  name: user.displayName || data.name || 'User',
+                  active: true // Ensure active on claim
                 } as UserProfile;
                 
                 await setDoc(doc(db, 'users', user.uid), newProfile);
-                await deleteDoc(doc(db, 'users', sanitizedEmail));
+                if (preDocId !== user.uid) {
+                  await deleteDoc(doc(db, 'users', preDocId));
+                }
                 setProfile(newProfile);
                 setLoading(false);
                 return;
@@ -67,20 +89,36 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             if (user.email?.toLowerCase() === "antar7theman@gmail.com") {
               const defaultProfile: UserProfile = {
                 uid: user.uid,
-                email: user.email,
+                email: user.email || '',
                 role: 'admin',
                 name: user.displayName || 'antar deffas',
+                photoUrl: user.photoURL || undefined,
                 active: true,
                 notificationPreferences: {
-                  expiry: { sms: true, email: true, push: true },
-                  lowStock: { sms: true, email: true, push: true },
-                  task: { sms: true, email: true, push: true }
+                  expiry: { push: true, email: true, sms: true },
+                  lowStock: { push: true, email: true, sms: true },
+                  task: { push: true, email: true, sms: true }
                 }
               };
               await setDoc(doc(db, 'users', user.uid), defaultProfile);
               setProfile(defaultProfile);
             } else {
-              setProfile(null);
+              // Create a default user profile for any other authenticated user
+              const defaultUserProfile: UserProfile = {
+                uid: user.uid,
+                email: user.email || '',
+                role: 'user',
+                name: user.displayName || 'User',
+                photoUrl: user.photoURL || undefined,
+                active: true,
+                notificationPreferences: {
+                  expiry: { push: true, email: true, sms: true },
+                  lowStock: { push: true, email: true, sms: true },
+                  task: { push: true, email: true, sms: true }
+                }
+              };
+              await setDoc(doc(db, 'users', user.uid), defaultUserProfile);
+              setProfile(defaultUserProfile);
             }
           }
         } catch (error) {
@@ -98,9 +136,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const isAdmin = profile?.role === 'admin';
   const isStaff = profile?.role === 'staff';
+  const isUser = profile?.role === 'user';
 
   return (
-    <AuthContext.Provider value={{ user, profile, loading, isAdmin, isStaff }}>
+    <AuthContext.Provider value={{ user, profile, loading, isAdmin, isStaff, isUser }}>
       {children}
     </AuthContext.Provider>
   );
@@ -109,7 +148,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 export const useAuth = () => useContext(AuthContext);
 
 export const AuthGuard: React.FC<{ children: React.ReactNode; requiredRole?: UserRole }> = ({ children, requiredRole }) => {
-  const { user, profile, loading, isAdmin } = useAuth();
+  const { user, profile, loading, isAdmin, isStaff } = useAuth();
   const location = useLocation();
 
   if (loading) {
@@ -125,6 +164,10 @@ export const AuthGuard: React.FC<{ children: React.ReactNode; requiredRole?: Use
   }
 
   if (requiredRole === 'admin' && !isAdmin) {
+    return <Navigate to="/" replace />;
+  }
+
+  if (requiredRole === 'staff' && !isAdmin && !isStaff) {
     return <Navigate to="/" replace />;
   }
 

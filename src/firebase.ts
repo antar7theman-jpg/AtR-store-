@@ -6,7 +6,18 @@ import firebaseConfig from '../firebase-applet-config.json';
 
 // Initialize Firebase SDK
 const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+
+// Initialize Firestore with fallback
+const initializeFirestore = (dbId?: string) => {
+  try {
+    return getFirestore(app, dbId);
+  } catch (e) {
+    console.warn(`Failed to initialize Firestore with database ID "${dbId}". Falling back to default.`);
+    return getFirestore(app);
+  }
+};
+
+export const db = initializeFirestore(firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth();
 export const storage = getStorage(app);
 
@@ -77,17 +88,23 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   throw new Error(JSON.stringify(errInfo));
 }
 
-// Validate Connection to Firestore
+// Validate Connection to Firestore and Storage
 async function testConnection() {
   try {
     // This is a simple connection test to ensure the client is online and config is correct.
     // We use getDocFromServer to force a network request.
     await getDocFromServer(doc(db, 'test', 'connection'));
+    console.log("Firestore connection successful");
   } catch (error) {
     if (error instanceof Error && error.message.includes('the client is offline')) {
       console.error("Please check your Firebase configuration. The client is offline.");
     }
     // Skip logging for other errors (like document not found), as this is simply a connection test.
+  }
+
+  // Basic check for Storage configuration
+  if (!firebaseConfig.storageBucket) {
+    console.error("Firebase Storage bucket is not configured in firebase-applet-config.json");
   }
 }
 

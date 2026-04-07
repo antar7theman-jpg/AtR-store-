@@ -2,18 +2,19 @@ import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
-import twilio from "twilio";
-import nodemailer from "nodemailer";
 import webpush from "web-push";
 import admin from "firebase-admin";
 import { getFirestore } from "firebase-admin/firestore";
 import fs from "fs";
+import cors from "cors";
+import nodemailer from "nodemailer";
+import twilio from "twilio";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Initialize Firebase Admin
-let db: admin.firestore.Firestore | null = null;
+let dbPromise: Promise<admin.firestore.Firestore> | null = null;
 try {
   const configPath = path.join(process.cwd(), 'firebase-applet-config.json');
   let firebaseConfig: any = null;
@@ -22,27 +23,69 @@ try {
   }
 
   if (!admin.apps.length) {
-    const adminConfig: any = {};
-    if (firebaseConfig && firebaseConfig.projectId) {
-      adminConfig.projectId = firebaseConfig.projectId;
+    const options: admin.AppOptions = {};
+    // Prioritize config project ID as it's explicitly set by set_up_firebase
+    if (firebaseConfig?.projectId) {
+      options.projectId = firebaseConfig.projectId;
+      console.log(`Using config project ID: ${firebaseConfig.projectId}`);
+    } else {
+      const envProjectId = process.env.GOOGLE_CLOUD_PROJECT || process.env.FIREBASE_PROJECT_ID;
+      if (envProjectId) {
+        options.projectId = envProjectId;
+        console.log(`Using environment project ID: ${envProjectId}`);
+      }
     }
-    admin.initializeApp(adminConfig);
-    console.log(`Firebase Admin initialized${adminConfig.projectId ? ` for project: ${adminConfig.projectId}` : " with default credentials"}`);
+    admin.initializeApp(options);
+    console.log(`Firebase Admin initialized. Project ID: ${admin.app().options.projectId}`);
   }
   
-  if (firebaseConfig) {
-    const databaseId = firebaseConfig.firestoreDatabaseId || '(default)';
-    try {
-      db = getFirestore(admin.app(), databaseId);
-      console.log(`Firestore initialized with database ID: ${databaseId}`);
-    } catch (e: any) {
-      console.warn(`Could not initialize Firestore with database ID ${databaseId}, falling back to default:`, e.message);
-      db = getFirestore(admin.app());
-    }
-  } else {
-    db = getFirestore(admin.app());
-    console.log("Firestore initialized with default database");
+  const currentProjectId = admin.app().options.projectId;
+  const configProjectId = firebaseConfig?.projectId;
+  
+  if (configProjectId && currentProjectId && configProjectId !== currentProjectId) {
+    console.warn(`Project ID mismatch! Config: ${configProjectId}, Current: ${currentProjectId}. This is common in remixed apps.`);
   }
+
+  // Try to use the configured database ID if it exists
+  const databaseId = firebaseConfig?.firestoreDatabaseId;
+  const initializeFirestore = async (dbId?: string): Promise<admin.firestore.Firestore> => {
+    const projectId = admin.app().options.projectId;
+    console.log(`Attempting to initialize Firestore. Project: ${projectId}, Database: ${dbId || '(default)'}`);
+    
+    try {
+      const firestore = dbId ? getFirestore(admin.app(), dbId) : getFirestore(admin.app());
+      // Test the connection with a simple get
+      await firestore.collection('health-check').limit(1).get();
+      console.log(`Firestore initialized successfully. Project: ${projectId}, Database: ${firestore.databaseId}`);
+      return firestore;
+    } catch (e: any) {
+      const isNotFound = e.message.includes('NOT_FOUND') || e.code === 5;
+      
+      if (dbId) {
+        console.warn(`Firestore initialization failed for database ID "${dbId}" in project "${projectId}": ${e.message}. Falling back to default database.`);
+        // If the custom database ID fails, try the default one
+        return initializeFirestore();
+      }
+      
+      if (isNotFound) {
+        const errorMsg = `CRITICAL: Firestore database not found in project "${projectId}". Please ensure a database is provisioned.`;
+        console.error(errorMsg);
+        throw new Error(errorMsg);
+      } else {
+        console.error(`Firestore initialization failed for default database in project "${projectId}":`, e.message);
+        throw e;
+      }
+    }
+  };
+
+  dbPromise = initializeFirestore(databaseId).catch(err => {
+    console.error("Final Firestore initialization failure:", err.message);
+    return null as any; // Allow server to start but DB operations will fail gracefully
+  });
+  dbPromise.then(firestore => {
+    // Initialize VAPID after DB is ready
+    initializeVapid(firestore).catch(err => console.error("Background VAPID initialization failed:", err));
+  });
 } catch (error: any) {
   console.error("Failed to initialize Firebase Admin:", error.message);
 }
@@ -53,48 +96,34 @@ let vapidKeys = {
   privateKey: (process.env.VAPID_PRIVATE_KEY || "").replace(/=/g, "")
 };
 
-async function initializeVapid() {
+async function initializeVapid(db: admin.firestore.Firestore) {
   console.log("Initializing VAPID for push notifications...");
   
-    // Try to get VAPID keys from Firestore if available
-    if (db) {
-      try {
-        const secretDoc = await db.collection("secrets").doc("vapid").get();
-        if (secretDoc.exists) {
-          const secretData = secretDoc.data();
-          if (secretData?.publicKey && secretData?.privateKey) {
-            vapidKeys.publicKey = secretData.publicKey.trim();
-            vapidKeys.privateKey = secretData.privateKey.trim();
-            console.log("Found VAPID keys in Firestore secrets");
-          }
-        } else {
-          console.log("No VAPID keys found in Firestore 'secrets/vapid'.");
-        }
-      } catch (err: any) {
-        console.error("Error fetching VAPID secrets from Firestore:", err.message);
-        if (err.message.includes("PERMISSION_DENIED")) {
-          console.error("PERMISSION_DENIED: The service account may not have sufficient permissions. Attempting fallback to default database...");
-          try {
-            const defaultDb = getFirestore(admin.app());
-            const fallbackDoc = await defaultDb.collection("secrets").doc("vapid").get();
-            if (fallbackDoc.exists) {
-              const secretData = fallbackDoc.data();
-              if (secretData?.publicKey && secretData?.privateKey) {
-                vapidKeys.publicKey = secretData.publicKey.trim();
-                vapidKeys.privateKey = secretData.privateKey.trim();
-                console.log("Found VAPID keys in default Firestore secrets");
-              }
-            }
-          } catch (fallbackErr: any) {
-            console.error("Fallback to default database also failed:", fallbackErr.message);
-          }
-        }
+  // Try to get VAPID keys from Firestore if available
+  try {
+    // Set a timeout for the Firestore fetch to prevent blocking server start indefinitely
+    const fetchPromise = db.collection("secrets").doc("vapid").get();
+    const timeoutPromise = new Promise<null>((_, reject) => 
+      setTimeout(() => reject(new Error("Firestore timeout")), 5000)
+    );
+
+    const secretDoc = await Promise.race([fetchPromise, timeoutPromise]) as admin.firestore.DocumentSnapshot;
+    
+    if (secretDoc && secretDoc.exists) {
+      const secretData = secretDoc.data();
+      if (secretData?.publicKey && secretData?.privateKey) {
+        vapidKeys.publicKey = secretData.publicKey.trim();
+        vapidKeys.privateKey = secretData.privateKey.trim();
+        console.log("Found VAPID keys in Firestore secrets");
       }
     }
+  } catch (err: any) {
+    console.warn("Note: Could not fetch VAPID secrets from Firestore:", err.message);
+  }
 
   // Helper to ensure key is valid Base64 URL-safe and correct length
   const prepareKey = (key: string, expectedLength: number | null = null): Buffer | null => {
-    if (!key || typeof key !== 'string') return null;
+    if (!key || typeof key !== 'string' || key.length === 0) return null;
     
     try {
       // Normalize to standard Base64
@@ -122,9 +151,8 @@ async function initializeVapid() {
     let priv = prepareKey(vapidKeys.privateKey, 32);
 
     if (!pub || !priv) {
-      console.log("VAPID keys missing or invalid in environment/Firestore. Generating new ones...");
+      console.log("VAPID keys missing or invalid. Generating new ones...");
       const newKeys = webpush.generateVAPIDKeys();
-      // Store the generated strings for logging
       const genPub = newKeys.publicKey;
       const genPriv = newKeys.privateKey;
       
@@ -132,55 +160,43 @@ async function initializeVapid() {
       priv = prepareKey(genPriv, 32);
       
       console.log("--- NEW VAPID KEYS GENERATED ---");
-      console.log("Public Key:", genPub);
-      console.log("Private Key:", genPriv);
-      console.log("Please save these to Firestore 'secrets/vapid' to persist them.");
-      console.log("--------------------------------");
-      
-      // Update the global keys so they can be served via API
       vapidKeys = newKeys;
+
+      // Auto-save to Firestore if possible
+      if (db) {
+        try {
+          await db.collection("secrets").doc("vapid").set({
+            publicKey: genPub,
+            privateKey: genPriv,
+            updatedAt: admin.firestore.Timestamp.now()
+          }, { merge: true });
+          console.log("Auto-saved new VAPID keys to Firestore");
+        } catch (saveErr: any) {
+          console.warn("Failed to auto-save VAPID keys:", saveErr.message);
+        }
+      }
     }
 
     if (pub && priv) {
-      // web-push setVapidDetails expects URL-safe base64 strings
       webpush.setVapidDetails(
         'mailto:Antar7theman@gmail.com',
         pub.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, ''),
         priv.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
       );
-      console.log("VAPID details set successfully");
+      console.log("VAPID details set successfully. Public Key Length:", vapidKeys.publicKey.length);
     } else {
-      throw new Error("Failed to prepare valid VAPID keys even after generation.");
+      throw new Error("Failed to prepare valid VAPID keys.");
     }
   } catch (error: any) {
     console.error("Failed to set VAPID details:", error.message);
-    
-    // Final fallback: generate and set immediately with raw generated keys
-    try {
-      console.log("Attempting final emergency VAPID generation...");
-      const finalKeys = webpush.generateVAPIDKeys();
-      webpush.setVapidDetails(
-        'mailto:Antar7theman@gmail.com',
-        finalKeys.publicKey,
-        finalKeys.privateKey
-      );
-      vapidKeys = finalKeys;
-      console.log("Emergency VAPID details set successfully");
-    } catch (finalError: any) {
-      console.error("CRITICAL: All VAPID initialization attempts failed:", finalError.message);
-    }
   }
 }
-
-// Store push subscriptions in memory for this demo
-const pushSubscriptions: any[] = [];
 
 async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  await initializeVapid();
-
+  app.use(cors());
   app.use(express.json());
 
   // API routes FIRST
@@ -188,105 +204,162 @@ async function startServer() {
     res.json({ status: "ok" });
   });
 
-  // SMS Route
-  app.post("/api/send-sms", async (req, res) => {
-    const { to, message } = req.body;
+  app.get("/api/test", (req, res) => {
+    res.json({ message: "API is working!" });
+  });
 
-    if (!to || !message) {
-      return res.status(400).json({ error: "Missing 'to' or 'message' field" });
+  // Push Notification Routes
+  app.get("/api/push-key", (req, res) => {
+    if (!vapidKeys.publicKey) {
+      console.warn("Push key requested but not yet initialized");
+      return res.status(503).json({ error: "VAPID keys are still initializing. Please try again in a few seconds." });
     }
+    res.json({ publicKey: vapidKeys.publicKey });
+  });
 
-    const accountSid = (process.env.TWILIO_ACCOUNT_SID || "").trim();
-    const authToken = (process.env.TWILIO_AUTH_TOKEN || "").trim();
-    const fromRaw = (process.env.TWILIO_PHONE_NUMBER || "").trim();
-    const from = fromRaw.startsWith('+') ? fromRaw : `+${fromRaw.replace(/\D/g, '')}`;
-
-    if (!accountSid || !authToken || !fromRaw) {
-      console.error("Twilio credentials missing or empty in environment variables");
-      return res.status(500).json({ 
-        error: "SMS service not configured", 
-        details: "TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, or TWILIO_PHONE_NUMBER is missing." 
-      });
+  app.get("/api/admin/vapid-keys", async (req, res) => {
+    // In a production app, we would verify the Firebase ID token here.
+    // For this environment, we'll provide the keys to the frontend which handles admin checks.
+    if (!vapidKeys.publicKey || !vapidKeys.privateKey) {
+      return res.status(503).json({ error: "VAPID keys not yet initialized" });
     }
+    res.json(vapidKeys);
+  });
+
+  app.post("/api/push-subscribe", async (req, res) => {
+    console.log("Received push subscription request");
+    const subscription = req.body;
+    if (!dbPromise) return res.status(500).json({ error: "Database not initialized" });
 
     try {
-      const client = twilio(accountSid, authToken);
-      // Ensure 'to' is also trimmed and formatted
-      const formattedTo = to.trim().startsWith('+') ? to.trim() : `+${to.trim().replace(/\D/g, '')}`;
+      const db = await dbPromise;
+      if (!db) return res.status(500).json({ error: "Database not available" });
       
-      const result = await client.messages.create({
-        body: message,
-        from: from,
-        to: formattedTo
+      if (!subscription || !subscription.endpoint) {
+        return res.status(400).json({ error: "Invalid subscription data" });
+      }
+      
+      // Use endpoint as a unique ID (hashed or encoded if needed, but Firestore IDs can be strings)
+      const subscriptionId = Buffer.from(subscription.endpoint).toString('base64').replace(/\//g, '_').replace(/\+/g, '-');
+      
+      await db.collection("pushSubscriptions").doc(subscriptionId).set({
+        ...subscription,
+        updatedAt: admin.firestore.Timestamp.now()
       });
-      console.log(`SMS sent successfully: ${result.sid}`);
-      res.json({ success: true, sid: result.sid });
+      
+      console.log("Successfully saved subscription for:", subscription.endpoint, "Database:", db.databaseId);
+      res.status(201).json({ success: true });
     } catch (error: any) {
-      const errorCode = error?.code || 'Unknown';
-      const errorStatus = error?.status || 500;
-      const errorMessage = error?.message || 'An unexpected error occurred with Twilio';
-      const errorMoreInfo = error?.moreInfo || 'https://www.twilio.com/docs/errors';
-
-      console.error("Twilio SMS Error Details:", {
-        code: errorCode,
-        status: errorStatus,
-        message: errorMessage,
-        moreInfo: errorMoreInfo
-      });
-
-      const errorMap: Record<string | number, string> = {
-        20003: "Authentication Failed: Please check your Twilio Account SID and Auth Token.",
-        21211: "Invalid Phone Number: The 'To' number is not a valid phone number.",
-        21408: "Permission Denied: You don't have permission to send to this region.",
-        21608: "Twilio Trial Limit: You can only send to verified numbers with a trial account. Please verify the number in your Twilio Console.",
-        21610: "Unsubscribed: The recipient has opted out of receiving messages.",
-        21614: "Invalid 'To' Number: The number is not a valid mobile number.",
-        20404: "Resource Not Found: The Twilio phone number might be incorrect.",
-      };
-
-      const userFriendlyMessage = errorMap[errorCode] || `Twilio Error (${errorCode}): ${errorMessage}`;
-      
-      res.status(errorStatus).json({ 
-        error: "Failed to send SMS", 
-        details: userFriendlyMessage,
-        code: errorCode 
+      const db = dbPromise ? await dbPromise.catch(() => null) : null;
+      console.error("Failed to save subscription:", error.message);
+      res.status(500).json({ 
+        error: error.message,
+        code: error.code,
+        dbId: db?.databaseId
       });
     }
   });
 
-  // Email Route (Gmail)
-  app.post("/api/send-email", async (req, res) => {
-    const { to, subject, message } = req.body;
-
-    if (!to || !subject || !message) {
-      return res.status(400).json({ error: "Missing 'to', 'subject', or 'message' field" });
+  app.post("/api/send-push", async (req, res) => {
+    console.log("Received send-push request:", req.body);
+    const { title, message } = req.body;
+    if (!dbPromise) {
+      console.warn("Database not initialized for send-push");
+      return res.status(500).json({ error: "Database not initialized" });
     }
 
-    const gmailUser = process.env.GMAIL_USER;
-    let gmailPass = process.env.GMAIL_PASS;
+    const payload = JSON.stringify({
+      title: title || "Inventory Alert",
+      body: message
+    });
 
-    // Try to get Gmail pass from Firestore if available
-    if (db) {
-      try {
-        const secretDoc = await db.collection("secrets").doc("gmail").get();
-        if (secretDoc.exists) {
-          const secretData = secretDoc.data();
-          if (secretData?.pass) {
-            gmailPass = secretData.pass;
-            console.log("Using Gmail App Password from Firestore secrets");
+    try {
+      const db = await dbPromise;
+      if (!db) throw new Error("Firestore database not available");
+      
+      const snapshot = await db.collection("pushSubscriptions").get();
+      const subscriptions = snapshot.docs.map(doc => doc.data());
+      console.log(`Sending push to ${subscriptions.length} subscribers. Database: ${db.databaseId}`);
+
+      const results = await Promise.all(subscriptions.map(async (sub: any) => {
+        try {
+          if (!vapidKeys.publicKey || !vapidKeys.privateKey) {
+            throw new Error("VAPID keys not initialized");
           }
+          await webpush.sendNotification(sub, payload);
+          return { success: true };
+        } catch (error: any) {
+          console.error("Push failed for subscription:", sub.endpoint, error.message);
+          if (error.statusCode === 410 || error.statusCode === 404) {
+            // Subscription expired or no longer valid
+            const subscriptionId = Buffer.from(sub.endpoint).toString('base64').replace(/\//g, '_').replace(/\+/g, '-');
+            await db.collection("pushSubscriptions").doc(subscriptionId).delete().catch(() => {});
+          }
+          return { success: false, error: error.message };
         }
-      } catch (err: any) {
-        console.error("Error fetching secrets from Firestore:", err.message);
-        if (err.message.includes("PERMISSION_DENIED")) {
-          console.error("PERMISSION_DENIED: The service account may not have 'Cloud Datastore User' or 'Firebase Admin' permissions for the database.");
-        }
+      }));
+
+      res.json({ success: true, results });
+    } catch (error: any) {
+      const db = dbPromise ? await dbPromise.catch(() => null) : null;
+      console.error("Failed to send push notifications:", error.message);
+      
+      let errorMsg = error.message;
+      if (error.code === 5 || error.message.includes('NOT_FOUND')) {
+        errorMsg = `Database not found (5 NOT_FOUND). Please ensure your Firestore database is provisioned and the ID is correct. Current DB: ${db?.databaseId || 'unknown'}`;
+      }
+
+      console.error("Error details:", {
+        code: error.code,
+        details: error.details,
+        dbId: db?.databaseId
+      });
+      res.status(500).json({ 
+        error: errorMsg, 
+        code: error.code,
+        dbId: db?.databaseId
+      });
+    }
+  });
+
+  app.post("/api/test-push", async (req, res) => {
+    const { subscription, title, message } = req.body;
+
+    const payload = JSON.stringify({
+      title: title || "Test Notification",
+      body: message || "This is a test push notification from ATR Store."
+    });
+
+    try {
+      if (!vapidKeys.publicKey || !vapidKeys.privateKey) {
+        throw new Error("VAPID keys not initialized");
+      }
+      await webpush.sendNotification(subscription, payload);
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error("Test push failed:", error.message);
+      if (error.statusCode) {
+        console.error("Push service error details:", {
+          statusCode: error.statusCode,
+          body: error.body,
+          headers: error.headers
+        });
+        res.status(error.statusCode).json({ 
+          error: error.message,
+          details: error.body,
+          statusCode: error.statusCode
+        });
+      } else {
+        res.status(500).json({ error: error.message });
       }
     }
+  });
 
+  app.post("/api/send-email", async (req, res) => {
+    const { to, subject, text, html, gmailUser, gmailPass } = req.body;
+    
     if (!gmailUser || !gmailPass) {
-      console.error("Gmail credentials missing in environment variables");
-      return res.status(500).json({ error: "Email service not configured" });
+      return res.status(400).json({ error: "Gmail credentials missing" });
     }
 
     try {
@@ -298,73 +371,41 @@ async function startServer() {
         }
       });
 
-      const mailOptions = {
-        from: gmailUser,
-        to: to,
-        subject: subject,
-        text: message
-      };
+      await transporter.sendMail({
+        from: `"ATR Store" <${gmailUser}>`,
+        to,
+        subject,
+        text,
+        html
+      });
 
-      await transporter.sendMail(mailOptions);
-      console.log(`Email sent successfully to ${to}`);
       res.json({ success: true });
     } catch (error: any) {
-      console.error("Failed to send email:", error);
-      let errorMessage = "Failed to send email";
-      let details = error.message;
-
-      if (error.message.includes("534-5.7.9") || error.message.includes("Application-specific password required")) {
-        errorMessage = "Gmail App Password Required";
-        details = "The password provided is your regular Gmail password. You MUST generate a 16-character 'App Password' in your Google Account Security settings to allow this app to send emails. Go to: https://myaccount.google.com/apppasswords";
-        console.error("CRITICAL: Gmail App Password required. Regular password will not work.");
-      } else if (error.message.includes("Invalid login") || error.message.includes("auth")) {
-        errorMessage = "Invalid Gmail Credentials";
-        details = "The Gmail username or App Password is incorrect. Please check your Settings and ensure you are using a 16-character App Password.";
-      }
-      
-      res.status(500).json({ error: errorMessage, details: details });
+      console.error("Email failed:", error.message);
+      res.status(500).json({ error: error.message });
     }
   });
 
-  // Push Notification Routes
-  app.get("/api/push-key", (req, res) => {
-    res.json({ publicKey: vapidKeys.publicKey });
-  });
+  app.post("/api/send-sms", async (req, res) => {
+    const { to, message, twilioSid, twilioAuthToken, twilioFromNumber } = req.body;
 
-  app.post("/api/push-subscribe", (req, res) => {
-    const subscription = req.body;
-    // Check if already exists
-    const exists = pushSubscriptions.find(s => s.endpoint === subscription.endpoint);
-    if (!exists) {
-      pushSubscriptions.push(subscription);
+    if (!twilioSid || !twilioAuthToken || !twilioFromNumber) {
+      return res.status(400).json({ error: "Twilio credentials missing" });
     }
-    res.status(201).json({});
-  });
 
-  app.post("/api/send-push", async (req, res) => {
-    const { title, message } = req.body;
+    try {
+      const client = twilio(twilioSid, twilioAuthToken);
+      await client.messages.create({
+        body: message,
+        from: twilioFromNumber,
+        to
+      });
 
-    const payload = JSON.stringify({
-      title: title || "Inventory Alert",
-      body: message
-    });
-
-    const results = await Promise.all(pushSubscriptions.map(async (sub) => {
-      try {
-        await webpush.sendNotification(sub, payload);
-        return { success: true };
-      } catch (error: any) {
-        console.error("Push failed for subscription:", sub.endpoint, error.message);
-        if (error.statusCode === 410 || error.statusCode === 404) {
-          // Subscription expired or no longer valid
-          const index = pushSubscriptions.indexOf(sub);
-          if (index > -1) pushSubscriptions.splice(index, 1);
-        }
-        return { success: false, error: error.message };
-      }
-    }));
-
-    res.json({ success: true, results });
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error("SMS failed:", error.message);
+      res.status(500).json({ error: error.message });
+    }
   });
 
   // Vite middleware for development

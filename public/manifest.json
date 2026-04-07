@@ -1,0 +1,25 @@
+{
+  "name": "ATR Store Inventory Manager",
+  "short_name": "ATR Store",
+  "description": "Mobile-first inventory and stock management with barcode scanning and automated alerts.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#2563eb",
+  "icons": [
+    {
+      "src": "https://picsum.photos/seed/inventory/192/192",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "https://picsum.photos/seed/inventory/512/512",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "orientation": "portrait",
+  "gcm_sender_id": "103953800507"
+}
